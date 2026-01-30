@@ -1,0 +1,191 @@
+---
+title: "Homework Chapter 8"
+author: "P Winston Miller"
+date: "2026-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+```
+
+### Homework 1
+
+-   Suppose the greenhouse tulip experiment had a temperature variable -\> hot +
+    cold
+-   suppose there were no blooms when hot, only when cold
+-   I am going to assume the experimental design stayed the same otherwise
+-   so, how to model this ensuring that whenever temp is hot, bloom size is 0
+
+```{r}
+data(tulips)
+d_cold = tulips
+d_cold$temp = 1
+d_hot = d_cold |>
+  mutate(temp = 0) |>
+  mutate(blooms = 0.00) |>
+  mutate(bed2 = ifelse(bed == "a", "d", "e")) |>
+  mutate(bed2 = ifelse(bed == "c","e", bed2)) |>
+  mutate(bed = NULL) |>
+  rename("bed" = "bed2")
+d = rbind(d_cold, d_hot)
+d$water_std = d$water - mean(d$water)
+d$shade_std = d$shade - mean(d$shade)
+d$blooms_std = d$blooms/max(d$blooms)
+```
+
+-   I think the way to approach this is just to make temperature interact with
+    every variable
+-   when temp is cold, temp = 1, and then the regression behaves normally
+-   when temp is hot, temp = 0 and that forces all the predictors to 0 out,
+    which then causes blooms to be 0
+
+```{r}
+hw1_params = alist(
+  blooms_std ~ dnorm(mu, sigma),
+  mu <- alpha*temp + bS*shade_std*temp + bW*water_std*temp + bSW*shade_std*water_std*temp,
+  alpha ~ dnorm(0.5, 0.25),
+  bS ~ dnorm(0,0.25),
+  bW ~ dnorm(0,025),
+  bSW ~ dnorm(0,0.25),
+  sigma ~ dexp(1)
+) 
+```
+
+```{r}
+hw1 = quap(hw1_params, data = d)
+precis(hw1)
+```
+
+-   so far so good, the model looks fine, lets try simulating when temp = 0 and
+    see what the predicted outcome is
+
+```{r}
+hw1_mu = link(hw1, data = data.frame(temp = 0, 
+                                     shade_std = seq(from = -1, to = 1, length.out = nrow(d)),
+                                     water_std = seq(from = -1, to = 1, length.out = nrow(d)))
+              )
+apply(hw1_mu, 2, mean)
+```
+
+-   YAY I WAS RIGHT!!
+-   TBH, I knew I was right, there was no question
+
+### Homework 2
+
+-   include the bed variable
+-   compare with WAIC & examine bed coefficients, what does this mean?
+
+```{r}
+data(tulips)
+d = tulips
+d$water_std = d$water - mean(d$water)
+d$shade_std = d$shade - mean(d$shade)
+d$blooms_std = d$blooms/max(d$blooms)
+```
+
+```{r}
+hw21 = quap(alist(blooms_std ~ dnorm(mu, sigma),
+                 mu <- alpha + bW*water_std + bS*shade_std + bWS*water_std*shade_std,
+                 alpha ~ dnorm(0.5,0.25),
+                 bW ~ dnorm(0,0.25),
+                 bS ~ dnorm(0,0.25),
+                 bWS ~ dnorm(0,0.25),
+                 sigma ~ dexp(1)), data = d)
+hw22 = quap(alist(blooms_std ~ dnorm(mu, sigma),
+                 mu <- alpha[bed] + bW*water_std + bS*shade_std + bWS*water_std*shade_std,
+                 alpha[bed] ~ dnorm(0.5,0.25),
+                 bW ~ dnorm(0,0.25),
+                 bS ~ dnorm(0,0.25),
+                 bWS ~ dnorm(0,0.25),
+                 sigma ~ dexp(1)), data = d)
+```
+
+```{r}
+precis(hw21)
+```
+
+```{r}
+precis(hw22, depth = 2)
+```
+
+```{r}
+compare(hw21,hw22,func="WAIC")
+```
+
+-   so, this says that hw22 has better out of bag prediction than the model
+    without bed
+-   however, the difference in WAIC is 2.4, and the dSE is 8.14, so, really,
+    there isn't a difference
+-   looking at posterior distributions of the indexed alpha, one of the beds had
+    much smaller bloom sizes overall than the other two, this probably accounts
+    for the difference in WAIC
+
+## Homework 3
+
+-   using the rugged data utilize WAIC pointwise penalties and PSIS pareto k
+    values to measure relative influence
+-   identify influential countries
+-   now try robust regression and see how it changes that
+
+```{r}
+data("rugged")
+d = data.frame(
+  country = rugged$country,
+  log_gdp = log(rugged$rgdppc_2000),
+  rugged = rugged$rugged,
+  cia = ifelse(rugged$cont_africa == 1, 1, 2))
+d = d[complete.cases(d),]
+d$log_gdp_std = d$log_gdp/mean(d$log_gdp) # makes this a proportion related to avg, sets avg to 1
+d$rugged_std = d$rugged/max(d$rugged) # makes this a % ruggedness, preserves 0% ruggedness
+rug_bar = mean(d$rugged_std)
+```
+
+```{r}
+hw3 = quap(alist(
+  log_gdp_std ~ dnorm(mu, sigma),
+  mu <- alpha[cia] + betaR[cia]*(rugged_std - rug_bar),
+  alpha[cia] ~ dnorm(1, 0.2),
+  betaR[cia] ~ dnorm(0,0.3),
+  sigma ~ dexp(1)), data = d1)
+```
+
+```{r}
+waic = cbind(d$country, WAIC(hw3, pointwise = T))
+psis = cbind(d$country, PSIS(hw3, pointwise = T))
+waic[order(waic$penalty, decreasing = T),]
+psis[order(psis$k, decreasing = T),]
+```
+
+```{r}
+hw32 = quap(alist(
+  log_gdp_std ~ dstudent(2, mu, sigma),
+  mu <- alpha[cia] + betaR[cia]*(rugged_std - rug_bar),
+  alpha[cia] ~ dnorm(1, 0.2),
+  betaR[cia] ~ dnorm(0,0.3),
+  sigma ~ dexp(1)), data = d1)
+precis(hw32, depth = 2)
+```
+
+```{r}
+compare(hw3,hw32, func = "WAIC")
+compare(hw3,hw32,func="PSIS")
+```
+
+```{r}
+waic = cbind(d$country, WAIC(hw32, pointwise = T))
+psis = cbind(d$country, PSIS(hw32, pointwise = T))
+waic[order(waic$penalty, decreasing = T),]
+psis[order(psis$k, decreasing = T),]
+```
+
+-   so seychelles is still pretty high, but the penalty has decreased somewhat
+-   out-of-bag performance is significantly increased in the second model

@@ -1,0 +1,254 @@
+---
+title: "SR - Chapter 2"
+author: "P Winston Miller"
+date: "2025-06-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(patchwork)
+```
+
+```{r}
+# 0 blue (4 white), 1 blue, 2 blue, 3 blue, 4 blue (0 white)
+ways = c(0,3,8,9,0)
+ways/sum(ways)
+```
+- show the different ways data can be produced
+- the percents are the probabilities of the first three drawings
+- the numbers are the plausibilities of each way data
+
+```{r}
+dbinom( 6 , size=9 , prob=0.99 )
+```
+- this gives the probability that p = 0.5 given 6 W on 9 tosses
+
+Define Grid
+```{r}
+p_grid = seq(from = 0, to = 1, length.out = 20)
+```
+
+Define Prior
+```{r}
+prior = rep(1,20)
+```
+- so I need priors for each value of p in the grid -> 20 values = 20 priors
+- this a UNIFORM prior, so the same probability of each p
+
+Compute Likelihood at each value
+```{r}
+likelihood = dbinom(x = 6, size = 9, prob = p_grid)
+head(likelihood)
+```
+- computing liklihood at each value in the grid
+- liklihood is the probability of each proportion of water given the observed data
+- likelihood is a vector where each item is the probability of that proportion
+  given the observed successes/failures
+  
+
+```{r}
+unstd.posterior = likelihood*prior
+head(unstd.posterior)
+```
+- the posterior distribution is the liklihood* prior
+- the understandized DOES NOT sum to 1
+
+```{r}
+posterior = unstd.posterior/sum(unstd.posterior)
+```
+- so standardizing it is just turning it into a composition
+- so, the sum of the undstandardized posterior = P(B) in bayes formula
+
+```{r}
+bayes = data.frame(likelihood = likelihood,
+                 prior = prior,
+                 unstd.posterior = unstd.posterior,
+                 posterior = posterior)
+p20 = ggplot(bayes, aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 20")
+p20
+```
+
+```{r}
+bayes = data.frame(
+  p_length = c(rep("20",20), rep("50",50),rep("100",100),rep("1000",1000)),
+  p_grid = c(seq(from = 0, to = 1, length.out = 20),
+             seq(from = 0, to = 1, length.out = 50),
+             seq(from = 0, to = 1, length.out = 100),
+             seq(from = 0, to = 1, length.out = 1000)),
+  prior = c(rep(1,20),
+            rep(1, 50),
+            rep(1,100),
+            rep(1,1000)))
+bayes$likelihood = dbinom(x = 6, size = 9, prob = bayes$p_grid)
+bayes$unstd.posterior = bayes$likelihood*bayes$prior
+bayes$posterior = bayes$unstd.posterior/sum(bayes$unstd.posterior)
+
+p20 = ggplot(bayes %>% filter(p_length == 20), 
+             aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 20")
+p50 = ggplot(bayes %>% filter(p_length == 50), 
+             aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 50")
+p100 = ggplot(bayes %>% filter(p_length == 100), 
+              aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 100")
+p1000 = ggplot(bayes %>% filter(p_length == 1000), 
+               aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 1000")
+(p20 + p50) / (p100 + p1000)
+```
+Setting different priors to see how that changes the posterior
+
+Prior 1 =  ifelse( p_grid < 0.5 , 0 , 1 )
+- this changes the prior to be uniform at 0 if the probability is less
+  than 0.5, but 1 if it is greater than 0.5
+```{r}
+# prior <- ifelse( p_grid < 0.5 , 0 , 1 )
+bayes1 = data.frame(
+  p_length = c(rep("20",20),
+               rep("50",50),
+               rep("100",100),
+               rep("1000",1000)),
+  p_grid = c(seq(from = 0, to = 1, length.out = 20),
+             seq(from = 0, to = 1, length.out = 50),
+             seq(from = 0, to = 1, length.out = 100),
+             seq(from = 0, to = 1, length.out = 1000)))
+bayes1$prior = ifelse(bayes1$p_grid <0.5,0,1)
+bayes1$likelihood = dbinom(x = 6, size = 9, prob = bayes1$p_grid)
+bayes1$unstd.posterior = bayes1$likelihood*bayes1$prior
+bayes1$posterior = bayes1$unstd.posterior/sum(bayes1$unstd.posterior)
+
+p20 = ggplot(bayes1 %>% filter(p_length == 20), 
+             aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 20")
+p50 = ggplot(bayes1 %>% filter(p_length == 50), 
+             aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 50")
+p100 = ggplot(bayes1 %>% filter(p_length == 100), 
+              aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 100")
+p1000 = ggplot(bayes1 %>% filter(p_length == 1000), 
+               aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 1000")
+(p20 + p50) / (p100 + p1000)
+```
+- so, this doesn't really change the high point of water probability at all, 
+  but it identified that high point much better at 50 samples than previously
+
+Prior 2 =  exp( -5*abs( p_grid - 0.5 ) )
+- so this prior is not being explicitly set as a distribution but rather as a
+  function of each value of p as the p_grid
+- so, I think this is a way of telling the model that values of P further away from 0.5    are less likely 
+- he doesn't explain why he chose this or what the meaning of it is
+```{r}
+bayes2 = data.frame(
+  p_length = c(rep("20",20),
+               rep("50",50),
+               rep("100",100),
+               rep("1000",1000)),
+  p_grid = c(seq(from = 0, to = 1, length.out = 20),
+             seq(from = 0, to = 1, length.out = 50),
+             seq(from = 0, to = 1, length.out = 100),
+             seq(from = 0, to = 1, length.out = 1000)))
+bayes2$prior = exp(-5*abs( bayes2$p_grid - 0.5 ) )
+bayes2$likelihood = dbinom(x = 6, size = 9, prob = bayes2$p_grid)
+bayes2$unstd.posterior = bayes2$likelihood*bayes2$prior
+bayes2$posterior = bayes2$unstd.posterior/sum(bayes2$unstd.posterior)
+
+p20 = ggplot(bayes2 %>% filter(p_length == 20), 
+             aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 20")
+p50 = ggplot(bayes2 %>% filter(p_length == 50), 
+             aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 50")
+p100 = ggplot(bayes2 %>% filter(p_length == 100), 
+              aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 100")
+p1000 = ggplot(bayes2 %>% filter(p_length == 1000), 
+               aes(x = p_grid, y = posterior)) +
+  geom_point(color = "navy") +
+  geom_line(stat = "identity", color = "navy") +
+  labs(y = "Posterior Probability",
+       x = "P: Proportion of WATER",
+       title = "Grid: 1000")
+(p20 + p50) / (p100 + p1000)
+```
+
+# Quadratic Approximation
+```{r}
+globe.quadratic = quap(
+  # Formula
+  alist(
+    W ~ dbinom(W + L, p), # binomial liklihood
+    p ~ dunif(0,1)), # uniform prior
+  # Data
+  data=list(W=6,L=3)
+)
+precis(globe.quadratic)
+```
+- posterior mean is approximately 0.67, which is the estimate of water coverage
+  on the globe
+- sd = Standard Deviatio = the curvature of the posterior
+- the 5.5% & 94.5% is the 89th percentile interval
+- Interpretion: 
+  Assuming the posterior is Gaussian, it is maximized at 0.67, 
+  and its standard deviation is 0.16.
+
+
+
+

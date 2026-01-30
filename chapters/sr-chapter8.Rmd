@@ -1,0 +1,431 @@
+---
+title: "Chapter 8"
+author: "P Winston Miller"
+date: "2026-01-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+```
+
+# Categorical Interaction
+
+```{r}
+data("rugged")
+d = rugged
+precis(d)
+```
+
+```{r}
+d1 = data.frame(log_gdp = log(d$rgdppc_2000),
+                rugged = d$rugged,
+                cia = ifelse(d$cont_africa == 1, 1, 2))
+d1 = d1[complete.cases(d1),]
+nrow(d1);nrow(d)
+```
+
+-   when working only with complete cases, have 170
+
+Standardizing the data
+
+```{r}
+mean_log_gdp = mean(d1$log_gdp)
+d1$rugged_std = d1$rugged/max(d1$rugged)
+d1$log_gdp_std = d1$log_gdp/mean(d1$log_gdp)
+mean(d1$rugged_std)
+```
+
+-   dividing ruggedness by its max value basically turns this measurement into a
+    % ruggedness measurement
+    -   later in the model I subtract mean
+-   standardizing gdp by its mean turns this into a proportion of the
+    international average value
+
+Modelling gdp based on ruggedness
+
+```{r}
+m_rg = quap(alist(
+  log_gdp_std ~ dnorm(mu, sigma),
+  mu <- alpha + betaR*(rugged_std - mean_rugged_std),
+  alpha ~ dnorm(1,1),
+  betaR ~ dnorm(0,1),
+  sigma ~ dexp(1)), data = d1)
+```
+
+-   by subtracting the mean from rugged standardized, you are basically
+    centering it at 0
+    -   this makes it easier to create a parameter value for alpha and beta,
+        since now those can be centered at 0
+-   alpha = the log gdp when ruggedness is at the sample mean
+    -   I scaled log gdp, meaning that the average is 1
+    -   so, assuming that countries with average ruggedness also have average
+        gdp, then this parameter should be centered around 1
+    -   I am subtracting the mean ruggedness from ruggedness so that when the
+        country is at mean ruggedness, its value = 0, therefore alpha becomes
+        the value of log gdp at the mean value of ruggedness
+
+```{r}
+precis(m_rg)
+```
+
+-   okay, so the model is very unsure whether ruggedness affects log_gdp at all,
+    the mean beta value is 0 and the confidence interval crosses 0 as well
+-   this might be due to bad priors because I set super general ones
+    -   lets try examining the priors and see what happens
+
+```{r}
+prior_samps = extract.prior(m_rg, n = 1000) # 1
+str(prior_samps)
+```
+
+```{r}
+sim_data = data.frame(rugged_std = seq(from = min(d1$rugged_std), 
+                                       to = max(d1$rugged_std),
+                                       length.out = 30))
+prior_mu = data.frame(link(m_rg, post = prior_samps, data = sim_data))
+str(prior_mu)
+```
+
+```{r}
+y = prior_mu[sample(1:1000, size = 30, replace = F),] |> pivot_longer(everything(), 
+                                    values_to = "y")
+plot_in = cbind(data.frame(x = rep(sim_data$rugged_std, 30)),y) |> 
+  mutate(group = rep(1:30, each = 30))
+```
+
+```{r}
+ggplot(data = plot_in, aes(x = x, y = y, group = group)) +
+  geom_line(alpha = 0.8, color = "navy") +
+  geom_hline(yintercept = 1.5, color = "red", linetype = "dashed")+
+  geom_hline(yintercept = 0.5, color = "red", linetype = "dashed")+
+  theme_classic()
+```
+
+-   okay, so, these priors suck, they should not be flat, and they should not
+    just consistently be so far above or so far below
+-   lets try using the regularized priors
+
+```{r}
+m_rg1 = quap(alist(
+  log_gdp_std ~ dnorm(mu, sigma),
+  mu <- alpha + betaR*(rugged_std - mean_rugged_std),
+  alpha ~ dnorm(1,0.2),
+  betaR ~ dnorm(0,0.3),
+  sigma ~ dexp(1)
+), data = d1)
+```
+
+-   basically forcing the alpha to be right around 1, so the averagely rugged
+    country is now assumed to have average log_gdp
+-   squishing the beta for ruggedness down to 0.3 sd, so basically saying that
+    the odds of ruggedness affecting gdp by more than 30% are increasingly small
+
+Process for examining priors
+
+```{r}
+sze = 50
+prior_samps = extract.prior(m_rg1, n = 1000) # 1
+sim_data = data.frame(rugged_std = seq(from = min(d1$rugged_std), 
+                                       to = max(d1$rugged_std),
+                                       length.out = sze))
+prior_mu = data.frame(link(m_rg1, post = prior_samps, data = sim_data))
+y = prior_mu[sample(1:1000, size = sze, replace = F),] |> pivot_longer(everything(), 
+                                    values_to = "y")
+plot_in = cbind(data.frame(x = rep(sim_data$rugged_std, sze)),y) |> 
+  mutate(group = rep(1:sze, each = sze))
+ggplot(data = plot_in, aes(x = x, y = y, group = group)) +
+  geom_line(alpha = 0.8) +
+  geom_hline(yintercept = 1.5, color = "red", linetype = "dashed")+
+  geom_hline(yintercept = 0.5, color = "red", linetype = "dashed")+
+  theme_classic()
+
+```
+
+-   these priors are a lot better, although changing the priors didn't much
+    change the estimates interestingly
+
+```{r}
+precis(m_rg1)
+precis(m_rg)
+```
+
+-   so lets see if adding africa affects this
+
+```{r}
+m_rga = quap(alist(
+  log_gdp_std ~ dnorm(mu, sigma),
+  mu <- alpha[cia] + betaR*(rugged_std - mean_rugged_std),
+  alpha[cia] ~ dnorm(1, 0.2),
+  betaR ~ dnorm(0,0.3),
+  sigma ~ dexp(1)), data = d1)
+```
+
+```{r}
+precis(m_rga, depth = 2)
+```
+
+-   so now beta is more reliably negative but the model still isn't certain
+-   also, can see that the African intercept is lower than non-African
+    intercept, this indicates a generally lower log_gdp in Africa
+-   and looking at the difference, can see that Africa as a continent kinda
+    drags down the whole average
+-   can compute mean and PI of inference
+
+```{r}
+post = extract.samples(m_rga);
+diff_alphas = post$alpha[,1] - post$alpha[,2]
+mean(diff_alphas); PI(diff_alphas, prob = 0.95)
+```
+
+-   so clearly Africa is about 17% lower than the rest of the world, as
+    proportional to international average log gdp
+-   so even though the beta value didn't change, meaning this model doesn't tell
+    us much about ruggedness, lets look at the model fit
+
+```{r}
+compare(m_rg1, m_rga)
+```
+
+-   so the Africa model gets all the weight, and even though the standard error
+    of difference is quite high, the total diff is very high
+-   this indicates that including Africa tells us something about this
+    relationship
+
+Plot the two lines
+
+```{r}
+rug_seq = seq(from = -0.2, to = 1, length.out = nrow(d1))
+mu_na = link(m_rga, data = data.frame(cia = 2, rugged_std = rug_seq))
+mu_a = link(m_rga, data = data.frame(cia = 1, rugged_std = rug_seq))
+```
+
+```{r}
+plot_in = data.frame(
+  rugged_std = d1$rugged_std,
+  log_gdp = d1$log_gdp_std,
+  ruggedness_std = rug_seq,
+  mu_not_africa = apply(mu_na, 2, mean),
+  mu_africa = apply(mu_a, 2, mean),
+  pi_not_africa_l = apply(mu_na, 2, PI, 0.95)[1,],
+  pi_not_africa_u = apply(mu_na, 2, PI, 0.95)[2,],
+  pi_africa_l = apply(mu_a, 2, PI, 0.95)[1,],
+  pi_africa_u = apply(mu_a, 2, PI, 0.95)[2,])
+```
+
+```{r}
+ggplot(data = plot_in, aes(x = ruggedness_std, y = mu_not_africa)) +
+  geom_point(inherit.aes = F, color = "navy",
+    aes(x = rugged_std, y = log_gdp)) +
+  geom_line(inherit.aes = F, color = "green",
+            aes(x = ruggedness_std, y = mu_africa)) +
+  geom_ribbon(inherit.aes = F, color = "green", alpha = 0.2, fill = "green",
+              aes(x = ruggedness_std, ymin = pi_africa_l, ymax = pi_africa_u)) +
+  geom_line(inherit.aes = F, color = "darkred",
+            aes(x = ruggedness_std, y = mu_not_africa)) +
+  geom_ribbon(inherit.aes = F, color = "darkred", alpha = 0.2, fill = "darkred",
+              aes(x = ruggedness_std, ymin = pi_not_africa_l, ymax = pi_not_africa_u)) +
+  theme_minimal()
+```
+
+-   so now I can see that there are two lines, corresponding to the two
+    intercepts, however, the relationship between them is still consistently
+    almost flat
+-   Interactions!
+-   so, since I am doing the indexing approach, need to
+
+```{r}
+m_rga2 = quap(alist(
+  log_gdp_std ~ dnorm(mu, sigma),
+  mu <- alpha[cia] + betaR[cia]*(rugged_std - mean_rugged_std),
+  alpha[cia] ~ dnorm(1, 0.2),
+  betaR[cia] ~ dnorm(0,0.3),
+  sigma ~ dexp(1)), data = d1)
+```
+
+```{r}
+precis(m_rga2, depth = 2)
+```
+
+-   ah! so now the relationship between ruggedness in and outside of africa is
+    different
+-   in africa, the relationship is positive, and outside it is negative
+
+```{r}
+compare(m_rga2, m_rga, m_rg1)
+compare(m_rga2, m_rga, m_rg1, func = PSIS)
+```
+
+-   furthermore, the interaction model fits better than the non-interaction
+    model
+    -   maybe not that much better, but better
+-   however, PSIS says that the pareto K values may be high, and the weight
+    given to the second model indicates this may be overfit due to outliers
+-   so lets try doing this with the student distribution
+
+```{r}
+m_rga3 = quap(alist(
+  log_gdp_std ~ dstudent(2, mu, sigma),
+  mu <- alpha[cia] + betaR[cia]*(rugged_std - mean_rugged_std),
+  alpha[cia] ~ dnorm(1, 0.2),
+  betaR[cia] ~ dnorm(0,0.3),
+  sigma ~ dexp(1)), data = d1)
+```
+
+```{r}
+PSIS(m_rga2)
+PSIS(m_rga3)
+```
+
+-   the new model does not have the same issues with pareto k values so it is
+    not overfit
+
+```{r}
+rug_seq = seq(from = -0.2, to = 1, length.out = nrow(d1))
+mu_na = link(m_rga3, data = data.frame(cia = 2, rugged_std = rug_seq))
+mu_a = link(m_rga3, data = data.frame(cia = 1, rugged_std = rug_seq))
+```
+
+```{r}
+plot_in = data.frame(
+  cia = ifelse(d1$cia == 1, "Africa","Not Africa"),
+  rugged_std = d1$rugged_std,
+  log_gdp = d1$log_gdp_std,
+  ruggedness_std = rug_seq,
+  mu_not_africa = apply(mu_na, 2, mean),
+  mu_africa = apply(mu_a, 2, mean),
+  pi_not_africa_l = apply(mu_na, 2, PI, 0.95)[1,],
+  pi_not_africa_u = apply(mu_na, 2, PI, 0.95)[2,],
+  pi_africa_l = apply(mu_a, 2, PI, 0.95)[1,],
+  pi_africa_u = apply(mu_a, 2, PI, 0.95)[2,])
+```
+
+```{r}
+ggplot(data = plot_in, aes(x = ruggedness_std, y = mu_not_africa)) +
+  geom_point(inherit.aes = F, aes(x = rugged_std, y = log_gdp, color = cia)) +
+  geom_line(inherit.aes = F, color = "red",
+            aes(x = ruggedness_std, y = mu_africa)) +
+  geom_ribbon(inherit.aes = F, color = "red", alpha = 0.2, fill = "red",
+              aes(x = ruggedness_std, ymin = pi_africa_l, ymax = pi_africa_u)) +
+  geom_line(inherit.aes = F, color = "blue",
+            aes(x = ruggedness_std, y = mu_not_africa)) +
+  geom_ribbon(inherit.aes = F, color = "blue", alpha = 0.2, fill = "blue",
+              aes(x = ruggedness_std, ymin = pi_not_africa_l, ymax = pi_not_africa_u)) +
+  labs(y = "Log-GDP Standardized", 
+         x = "Country Ruggedness Standardized",
+         color = "Continent") +
+  scale_color_manual(values = c("Africa" = "darkred", "Not Africa" = "navy")) +
+  theme_minimal()
+```
+
+-   ah! Now that is interesting, so africa starts lower (with low ruggedness)
+    but increases log gdp as ruggedness increases
+    -   I bet this is mostly just a mediator for interior vs exterior
+-   and the relationship between ruggedness and log-gdp in non-african is much
+    stronger
+
+```{r}
+precis(m_rga3, depth = 2)
+```
+
+-   so now the model is quite certain the relationship outside of Africa is
+    negative, and pretty strongly so for every percent increase in ruggedness
+-   whereas the relationship in Africa is weakly positive, maybe, still crosses
+    0
+
+# Continuous Interactions
+
+-   a toy example for continuous interactions
+
+```{r}
+data(tulips)
+d = tulips
+precis(d)
+str(d)
+```
+
+-   So, need to standardize the data
+-   for bloom size, want to preserve 0, but otherwise make it standard
+-   maybe just proportion of largest bloom?
+
+```{r}
+d$blooms_std = d$blooms/max(d$blooms)
+d$water_center = d$water - mean(d$water)
+d$shade_center = d$shade - mean(d$shade)
+```
+
+```{r}
+m_t = quap(alist(blooms ~ dnorm(mu, sigma),
+                 mu <- alpha + betaW*water_center + betaS*shade_center,
+                 alpha ~ dnorm(0.5,0.25),
+                 betaW ~ dnorm(0,0.25),
+                 betaS ~ dnorm(0,0.25),
+                 sigma ~ dexp(1)), data = d)
+
+m_ti = quap(alist(blooms_std ~ dnorm(mu, sigma),
+                 mu <- alpha + betaW*water_center + betaS*shade_center + betaWS*water_center*shade_center,
+                 alpha ~ dnorm(0.5,0.25),
+                 betaW ~ dnorm(0,0.25),
+                 betaS ~ dnorm(0,0.25),
+                 betaWS ~ dnorm(0,0.25),
+                 sigma ~ dexp(1)), data = d)
+```
+
+```{r}
+precis(m_t)
+```
+
+```{r}
+precis(m_ti)
+```
+
+# Plotting Posterior Predictions with Interactions
+
+-   this is a good way to understand "what the model thinks" on the scale of the
+    outcome
+-   he creates a tryptich plot with one of the interacting variables as the
+    facets
+
+1.  First, create the mean bloom size prediction samples from the model based on
+    the simulated water values + constant shade values
+
+```{r}
+water_seq = seq(from = -1, to = 1, length.out = nrow(d))
+mu_s1 = link(m_ti, data = data.frame(water_center = water_seq, shade_center = -1))
+mu_s2 = link(m_ti, data = data.frame(water_center = water_seq, shade_center = 0))
+mu_s3 = link(m_ti, data = data.frame(water_center = water_seq, shade_center = 1))
+```
+
+2.  Next calculate the mean from the predictions, ignoring PI for this
+
+```{r}
+mus1 = apply(mu_s1, 2, mean)
+mus2 = apply(mu_s2, 2, mean)
+mus3 = apply(mu_s3, 2, mean)
+```
+
+3.  Construct the plotting data frame
+
+```{r}
+plot_in = data.frame(
+  mu = c(mus1, mus2, mus3),
+  water = rep(water_seq, 3),
+  shade = rep(c(-1,0,1), each = nrow(d)),
+  water_value = d$water_center,
+  bloom_value = d$blooms_std)
+```
+
+```{r}
+ggplot(data = plot_in, aes(x = water, y = bloom_value)) +
+  geom_line(inherit.aes = F, aes(x = water, y = mu), color = "navy") +
+  geom_point(color = "blue", inherit.aes = F, aes(x = water_value, y = bloom_value)) +
+  facet_wrap(~shade)
+```

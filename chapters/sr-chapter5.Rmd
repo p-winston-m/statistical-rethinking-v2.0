@@ -1,0 +1,845 @@
+---
+title: "Chapter 5 - Multiple Regression"
+author: "P Winston Miller"
+date: "2025-10-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(patchwork)
+library(dagitty)
+library(ggdag)
+```
+
+Z-Score Function
+
+```{r}
+calc_z = function(x){
+  std = (x - mean(x))/sd(x)
+  return(std)
+}
+```
+
+# Divorce Rates Example
+
+-   looking first at age of marriage as a predictor for divorce rate
+
+Load Data
+
+```{r}
+data("WaffleDivorce")
+df = WaffleDivorce
+```
+
+Standardize Variables - he always does this, it is good practice - I need to get
+used to understanding and thinking about beta values in terms of effects on
+standard deviations - using my custom z-score function
+
+```{r}
+df$A = calc_z(df$MedianAgeMarriage)
+df$D = calc_z(df$Divorce)
+df$M = calc_z(df$Marriage)
+```
+
+Lets do 2 regressions 1. Divorce regressed on Age
+
+```{r}
+m11_params = alist(
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaA*A,
+  alpha ~ dnorm(0,0.2),
+  betaA ~ dnorm(0,0.5),
+  sigma ~ dexp(1)
+)
+m11 = quap(m11_params,data = df)
+precis(m11)
+```
+
+-   when outcome and preditor are standardized, alpha should be very close to 0
+-   here beta means that for every 1 standard deviation in Age, divorce rate
+    changes by beta change in standard deviation of divorce
+    -   sd of age at marriages = 1.24 years
+    -   sd of divorce = 1.8 years
+    -   so a beta of 1 implies a change of 1 sd of divorce for every 1 sd of age
+        at marriage
+    -   dick says this is a strong association, therefore want the beta to be
+        relatively weak
+
+Use the built in tools to examine priors
+
+```{r}
+set.seed(1992)
+prior11 = extract.prior(m11, n = 1e2) # just 100 samples so I can see them
+mu = as.data.frame(link(m11, post = prior11, data = list(A = c(-3,3)))) |>
+  mutate(group = row_number())
+prior11_in = data.frame(mu = c(mu[,1], mu[,2]),
+                        group = c(rep(mu[,3],2)),
+                        x_axis = c(rep(-3, nrow(mu)), rep(3,nrow(mu))))
+ggplot(data = prior11_in, aes(x = x_axis, y = mu, group = group)) +
+  geom_line(alpha = 0.2, color = "navyblue") +
+  labs(y = "Divorce Standardized", x = "Marriage Age Standardized") +
+  theme_minimal() +
+  scale_x_continuous(breaks = c(-3,-2,-1,0,1,2,3)) +
+  scale_y_continuous(breaks = c(-3,-2,-1,0,1,2,3))
+```
+
+-   these are plausible regression lines allowed by the prior, some of them seem
+    really extreme, like a 1:1 relationship between standard deviation of
+    marriage age and divorce for instance -\> those lines that go straight
+    diagonal
+
+```{r}
+age_set = seq(from = -3.2, to = 3.2, length.out = 50)
+mua = link(m11, data = list(A = age_set), n = 1e3)
+mua_pi = apply(mua,2,PI,0.95)
+mua_in = data.frame(mu_mean = (apply(mua,2,mean)*sd(df$Divorce)+ mean(df$Divorce)),
+                   mu_pi_l = (mua_pi[1,]*sd(df$Divorce)+ mean(df$Divorce)),
+                   mu_pi_u = (mua_pi[2,]*sd(df$Divorce)+ mean(df$Divorce)),
+                   x = seq(from = min(df$MedianAgeMarriage),
+                           to = max(df$MedianAgeMarriage),
+                           length.out = 50))
+
+ad_plot = ggplot(data = df, aes(x = MedianAgeMarriage, y = Divorce)) +
+  geom_point(color = "navyblue", alpha = 0.9) +
+  geom_line(alpha = 1, color = "navyblue", inherit.aes = F,
+            data = mua_in, aes(x = x, y = mu_mean)) +
+  geom_ribbon(alpha = 0.3, color = "navyblue", fill = "navyblue", inherit.aes = F,
+              data = mua_in, aes(x = x, ymin = mu_pi_l, ymax = mu_pi_u)) +
+  labs(y = "Divorce Rate", x = "Median Age of Marriage") +
+  theme_minimal()  +
+  scale_y_continuous(breaks = seq(from = 6, to = 13, by = 2))
+ad_plot
+```
+
+-   this fit is clearly negative so the older the age of marriage, the less
+    likely the couple is to divorce
+-   he didn't explain what divorce rate was, I am guessing it is couples
+    divorced per 100 couples
+
+2.  Divorce Regressed on Marriage Rate
+
+```{r}
+m12_params = alist(
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaM*M, # marriage rate
+  alpha ~ dnorm(0,0.2), # since both are standardized, then should be close to 0
+  betaM ~ dnorm(0,0.5),
+  sigma ~ dexp(1)
+)
+
+m12 = quap(m12_params, data = df)
+precis(m12)
+```
+
+-   so it seems that as marriage rate increases by 1 standard deviation, divorce
+    rate increases by 0.35 standard deviations, or 1.3 marriages
+-   since the priors are the same, then no need to re-examine those
+
+```{r}
+marriage_set = seq(from = -3.2, to = 3.2, length.out = 50)
+mum = link(m12, data = list(M = marriage_set), n = 1e3)
+mum_pi = apply(mum,2,PI,0.95)
+mum_in = data.frame(mu_mean = (apply(mum,2,mean)*sd(df$Divorce)+ mean(df$Divorce)),
+                   mu_pi_l = (mum_pi[1,]*sd(df$Divorce)+ mean(df$Divorce)),
+                   mu_pi_u = (mum_pi[2,]*sd(df$Divorce)+ mean(df$Divorce)),
+                   x = seq(from = min(df$Marriage),
+                           to = max(df$Marriage),
+                           length.out = 50))
+
+md_plot = ggplot(data = df, aes(x = Marriage, y = Divorce)) +
+  geom_point(color = "darkred", alpha = 0.9) +
+  geom_line(alpha = 1, color = "darkred", inherit.aes = F,
+            data = mum_in, aes(x = x, y = mu_mean)) +
+  geom_ribbon(alpha = 0.3, color = "darkred", fill = "darkred", inherit.aes = F,
+              data = mum_in, aes(x = x, ymin = mu_pi_l, ymax = mu_pi_u)) +
+  labs(y = "Divorce Rate", x = "Marriage Rate") +
+  theme_minimal() +
+  scale_y_continuous(breaks = seq(from = 6, to = 13, by = 2))
+```
+
+3.  Comparing the two Models
+
+```{r}
+ad_plot + md_plot +
+  plot_layout(axis_titles = "collect", axes = "collect") +
+  plot_layout(widths = c(4,4),
+              guides = 'collect')
+```
+
+-   so they seem to point in opposite directions,
+    -   as age of marriage increases, divorce rate goes down
+    -   as Marriage rate increases, so do divorces
+-   this kinda makes sense, it could be that people who divorce get remarried,
+    thereby increasing the marriage rate
+-   lets look and see how these two are correlated
+-   the 95% percentile interval for mean for median age of marriage is much
+    tighter than marriage rate, indicating maybe a better model fit?
+
+```{r}
+cor(df$A, df$M, method = "spearman")
+```
+
+-   interesting, they seem to have a strong negative correlation, so for states
+    where the median age of marriage is higher, the marriage rate is lower
+-   so lets construct a DAG to imagine how these work together
+-   based on the correlation and the plots, I can imagine 2 different
+    possibilites
+
+```{r}
+amd_dag1 = dagitty(
+  "dag {
+    A -> D
+    A -> M
+    M -> D
+  }")
+amd_dag2 = dagitty(
+  "dag {
+    A-> D
+    A -> M
+  }")
+dag_plot1 = ggdag(amd_dag1, layout = "stress") + 
+  theme_dag() 
+dag_plot2 = ggdag(amd_dag2, layout = "stress") +
+  theme_dag()
+dag_plot1 + dag_plot2
+```
+
+-   so in the first one age acts on both, and marriage rate acts on divorce on
+    its own
+-   in the second, marriage rate does not act on divorce on its own, but is
+    acted on it by age
+-   basically, by using multiple linear regression, I can test whether or not
+    that arrow from M to D exists
+
+Regressing Divorce Rate on Both Marriage Rate & Marriage Age
+
+```{r}
+m2_params = alist(
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaM*M + betaA*A,
+  alpha ~ dnorm(0,0.2),
+  betaM ~ dnorm(0,0.5),
+  betaA ~ dnorm(0,0.5),
+  sigma ~ dexp(1))
+
+m2 = quap(m2_params, data = df)
+precis(m2)
+plot(coeftab(m11,m12,m2))
+m2_mu = link(m2)
+```
+
+-   interesting... now both age and marriage rate have an estimate negative
+    effect on mean divorce rate
+-   notice however, that marriage rate is so weakly associated the golem can't
+    even decide what direction marriage rate is associated with divorce rate
+-   and see how the beta for age is in roughly the same spot in both the
+    multiple regression and the simple regression
+-   so this implies only the second dag is correct
+
+```{r}
+dag_plot2
+```
+
+# Predictor Residual Plots
+
+-   allows us to see the average prediction error when using other predictors to
+    model the predictor of interest Step 1: Model predictor of interest on other
+    predictor
+
+Marriage Rate on Age
+
+```{r}
+m2_ma_params = alist(
+  M ~ dnorm(mu, sigma),
+  mu <- alpha + betaA*A,
+  alpha ~ dnorm(0,0.2),
+  betaA ~ dnorm(0,0.5),
+  sigma ~ dexp(1))
+
+m2_ma = quap(m2_ma_params, data = df)
+```
+
+Age on Marriage Rates
+
+```{r}
+m2_am_params = alist(
+  A ~ dnorm(mu, sigma),
+  mu <- alpha + betaM*M,
+  alpha ~ dnorm(0,0.2),
+  betaM ~ dnorm(0,0.5),
+  sigma ~ dexp(1))
+
+m2_am = quap(m2_am_params, data = df)
+```
+
+Step 2: Sample Posteriors Marriage Rate regressed Age
+
+```{r}
+ma_mu = link(m2_ma)
+ma_pi = apply(ma_mu,2,PI,0.95)
+ma_resid = data.frame(mu = apply(ma_mu,2,mean),
+                      pi_l = ma_pi[1,],
+                      pi_u = ma_pi[2,],
+                      mu_full = apply(m2_mu,2,mean),
+                      A = df$A, M = df$M, D = df$D) |> 
+  mutate(resid = M - mu)
+ma_resid$resid
+1-(ma_resid$resid/ma_resid$M)*100
+mean(1-(ma_resid$resid/ma_resid$M)*100)
+```
+
+-   this model is saying that agre is a really bad predictor of marriage rate
+-   this appears to be the opposite of what the book says which is interesting
+
+Age on Marriage Rates
+
+```{r}
+am_mu = link(m2_am)
+am_pi = apply(m2_A_on_M_mu,2,PI,0.95)
+am_resid = data.frame(mu = apply(m2_A_on_M_mu,2,mean),
+                      pi_l = am_pi[1,],
+                      pi_u = am_pi[2,],
+                      mu_full = apply(m2_mu,2,mean),
+                      A = df$A, M = df$M, D = df$D) |> 
+  mutate(resid = A - mu)
+am_resid$resid
+1-(am_resid$resid/am_resid$A)*100
+mean(1-(am_resid$resid/am_resid$A)*100)
+```
+
+-   so these are standard deviations remember so, by and large, they don't seem
+    that far off although still not a great model
+-   based on the correlation, I would expect them to predict with about 70%
+    accuracy, and the model actually seems as if it is doing about that on
+    average, although it is way off for some specifics
+-   interestingly, marriage rate is a much better predictor of age at marriage,
+    than vice versa
+-   this actually doesn't agree with y dag exactly? Idk, wish I was actually in
+    the class so I could ask dick about it
+
+Predictor Regressed on Predictor Plots
+
+```{r}
+pr_plot1 = ggplot(data = am_resid, aes(x = M, y = A)) +
+  geom_point(color = "navyblue", alpha = 0.9) +
+  geom_line(aes(x = M, y = mu), color = "black") +
+  geom_ribbon(alpha = 0.3, color = "lightgrey", fill = "lightgrey", inherit.aes = F,
+              aes(x = M, ymin = pi_l, ymax = pi_u)) +
+  geom_segment(aes(x = M, y = mu, yend = A)) +
+  labs(x = "Marriage Rate (std)", y = "Age at Marriage (std)", title = "") +
+  theme_classic()
+pr_plot1
+```
+
+```{r}
+pr_plot2 = ggplot(data = ma_resid, aes(x = A, y = M)) +
+  geom_point(color = "navyblue", alpha = 0.9) +
+  geom_line(aes(x = A, y = mu), color = "black") +
+  geom_ribbon(alpha = 0.3, color = "lightgrey", fill = "lightgrey", inherit.aes = F,
+              aes(x = A, ymin = pi_l, ymax = pi_u)) +
+  geom_segment(aes(x = A, y = mu, yend = M)) +
+  labs(x = "Marriage Rate (std)", y = "Age at Marriage (std)", title = "") +
+  theme_classic()
+pr_plot2
+```
+
+# Posterior Prediction Plots
+
+-   basically plot the actual outcome, and then the predicted outcome to see how
+    accurate it is
+-   this seems like a y - yhat plot which has a name that I can't remember right
+    now
+
+1.  Just need to draw samples from the model, including the actual data instead
+    of generating new data like we do sometimes
+
+```{r}
+m2_mu = link(m2)
+pi = apply(m2_mu,2,PI,0.95)
+plot_in = data.frame(D = df$Divorce,
+                     mu = (apply(m2_mu,2,mean)*sd(df$Divorce))+mean(df$Divorce),
+                     pi_l = (pi[1,]*sd(df$Divorce))+mean(df$Divorce),
+                     pi_u = (pi[2,]*sd(df$Divorce))+mean(df$Divorce))
+ggplot(data = plot_in, aes(x = D, y = mu)) +
+  geom_point(color = "navy", alpha = 0.9) +
+  geom_segment(aes(x = D, y = pi_l, yend = pi_u), color = "navy") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_x_continuous(limits = c(0,14), n.breaks = 6) +
+  scale_y_continuous(limits = c(0,14), n.breaks = 6) +
+  coord_cartesian(xlim = c(3.5, 13.5), ylim = c(3.5, 13.5)) +
+  labs(x = "Observed Divorce Rate", 
+       y = "Predicted Divorce Rate")
+
+```
+
+# Counterfactual Plots
+
+-   these plots show the change on one intervention variable when all other
+    variables are essentially held constant
+-   According to the dag, need to make sure other predictor variables are
+    conditioned appropriately on the intervention variable.
+-   can do this by generating multiple models
+
+1.  Generate the model
+
+```{r}
+m2_params = alist(
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaM*M + betaA*A,
+  alpha ~ dnorm(0,0.2),
+  betaM ~ dnorm(0,0.5),
+  betaA ~ dnorm(0,0.5),
+  sigma ~ dexp(1))
+
+m2 = quap(m2_params, data = df)
+precis(m2)
+plot(coeftab(m11,m12,m2))
+m2_mu = link(m2)
+```
+
+2.  Generate two models, based on the dag
+
+```{r}
+set.seed(1234)
+m22_params = alist(
+  ## OG Dag : A-> D <- M
+  # or divorce = age + marriage rate
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaM*M + betaA*A,
+  alpha ~ dnorm(0, 0.2),
+  betaM ~ dnorm(0, 0.5),
+  betaA ~ dnorm(0, 0.5),
+  sigma ~ dexp(1),
+  ## The Other portion of the dag A -> M
+  ## this is reflecting the causal relationship between A and M
+  M ~ dnorm(mu_M, sigma_M),
+  mu_M <- alpha_M + betaA_M*A,
+  alpha_M ~ dnorm(0,0.2),
+  betaA_M ~ dnorm(0,0.5),
+  sigma_M ~ dexp(1)
+)
+m22 = quap(m22_params, data = df)
+precis(m22);precis(m2)
+```
+
+-   Interested in betaA_M -\> the beta from the new regression
+    -   this interrogates the relationship between A and M in the above model
+    -   this shows a strong negaitve correlation, whereas A increases by 1
+        standard dev, marriage rate decreases by .69 standard deviations -\>
+        strong
+-   these are two separate regressions, the first is not change by the second
+-   however, now that I have this linked, I can construct marriage rates from a
+    predetermined set of ages to then feed into the first model
+
+2.  Construct intervention variable\
+
+```{r}
+age_var = seq(from = -2, to = 2, length.out = 30)
+```
+
+3.  Generate samples from the previously fitted parameters
+
+```{r}
+# A -> generate parameter samples from model
+m22_samps = extract.samples(m22,n = 1e3)
+head(m22_samps)
+apply(m22_samps,2,mean) # this is basically what precis does
+```
+
+-   each row is a sample from the fitted parameter distribution
+-   each column is a parameter with intact covariance
+
+4.  Generate new values for intervention variable
+
+-   need to generate according to the dag
+-   so generate values for marriage rate based on Age (intervention variable)
+-   because dag goes A -\> M -\> D \<- A
+
+```{r}
+# B -> Causal fit 1
+M_samps = with(m22_samps,
+  sapply(1:30, function(i) rnorm(1e3,
+                                 mean = alpha_M + betaA_M*age_var[i],
+                                 sd = sigma_M))
+)
+str(M_samps)
+M_samps[1:5,1:5]
+mean_M = apply(M_samps,2,mean)
+pi_M = apply(M_samps,2,PI,0.95)
+mean_M
+```
+
+-   need to set rnorm to be the same length as the vectors put in to make it
+    generate a distribution for each index
+-   Each column of M_samps is a simulated value of age from age_var
+-   each row is a sample
+-   above simulating Marriage Rate based on the regression of M on A
+-   now we can simulate the effect of marriage rate on divorce, controlling for
+    the effect of age
+
+```{r}
+D_samps = with(m22_samps, 
+               sapply(1:30, function(i) rnorm(1e3, 
+                                              alpha + 
+                                              betaA*age_var[i] + 
+                                              betaM*M_samps[,i], 
+                                              sigma ) ) )
+D_samps[1:5,1:5]
+```
+
+```{r}
+pi1 = apply(M_samps, 2, PI, 0.95)
+pi2 = apply(D_samps, 2, PI, 0.95)
+plot_in = data.frame(counterfactual_divorce = apply(D_samps,2,mean),
+                     counterfactual_age = age_var,
+                     counterfactural_marriage_rate = apply(M_samps,2,mean),
+                     piM_u = pi1[2,], piM_l = pi1[1,],
+                     piD_u = pi2[2,], piD_l = pi2[1,])
+ggplot(data = plot_in, aes(x = counterfactual_age, y = counterfactual_divorce)) +
+  geom_line() +
+  geom_ribbon(aes(x = counterfactual_age, ymin = piD_l, ymax = piD_u), alpha = 0.1)
+ggplot(data = plot_in, aes(y =counterfactural_marriage_rate, 
+                           x = counterfactual_age)) +
+  geom_line() +
+  geom_ribbon(aes(x = counterfactual_age, ymin = piM_l, ymax = piM_u), alpha = 0.1)
+ggplot(data = plot_in, aes(y = counterfactual_divorce, 
+                           x = counterfactural_marriage_rate)) +
+  geom_line() +
+  geom_ribbon(aes(x = counterfactural_marriage_rate, ymin = piD_l, ymax = piD_u), alpha = 0.1)
+```
+
+```{r}
+sim_dat = data.frame( M=seq(from=-2,to=2,length.out=30) , A=0 )
+s = sim(m22 , data=sim_dat , vars="D" )
+pi = apply(s,2,PI,0.95)
+plot_in = data.frame(D = apply(s, 2, mean),
+                     M = sim_dat$M,
+                     pi_l = pi[1,],
+                     pi_u = pi[2,])
+ggplot(data = plot_in, aes(y = D, 
+                           x = M)) +
+  geom_line() +
+  geom_ribbon(aes(x = M, ymin = pi_l, ymax = pi_u), alpha = 0.1)
+```
+
+-   so, I think that what he shows in the counterfactual box is simulating the
+    effect of age on divorce, controlling for the effect of marriage rate
+-   in order to recreate what he has in the book, I need to just simulate the
+    effect of marriage rate by setting age to 0
+
+Below is I think using the correct way but doing it manually - so here I am just
+setting age to its mean and simulating M, ignoring the effect of age
+
+```{r}
+new_M_in = seq(from = -2, to = 2, length.out = 30)
+D_samps = with(m22_samps, 
+               sapply(1:30, function(i) rnorm(1e3, 
+                                              alpha + 
+                                              betaA*0 + 
+                                              betaM*new_M_in[i], 
+                                              sigma)))
+D_samps[1:5,1:5]
+```
+
+```{r}
+pi = apply(D_samps,2,PI,0.95)
+plot_in = data.frame(D = apply(D_samps, 2, mean),
+                     M = new_M_in,
+                     pi_l = pi[1,],
+                     pi_u = pi[2,])
+ggplot(data = plot_in, aes(y = D, 
+                           x = M)) +
+  geom_line() +
+  geom_ribbon(aes(x = M, ymin = pi_l, ymax = pi_u), alpha = 0.1)
+```
+
+-   okay, I guess I am not simulating the same number of samples BUT, this is
+    what I expected to see! Yay!
+
+# Masked Relationship
+
+-   this is showing how multiple linear regression can reveal relationships
+
+```{r}
+data(milk)
+str(milk)
+d = milk[complete.cases(milk),]
+d$K = calc_z(d$kcal.per.g)
+d$M = calc_z(log(d$mass))
+d$N = calc_z(d$neocortex.perc)
+nrow(milk);nrow(d) # only 17 observations now, down from 29
+```
+
+First, lets look at the bivariate relationship between the 2
+
+```{r}
+m31_params = alist(K ~ dnorm(mu, sigma),
+                   mu <- alpha + betaM*M, 
+                   alpha ~ dnorm(0,0.2),
+                   # I already log transformed mass, so it doesnt need to be
+                   # log normal, can just be normal I think
+                   betaM ~ dnorm(0,0.5),
+                   sigma ~ dexp(1))
+m31 = quap(m31_params, data = d)
+```
+
+Examine priors to make sure they are reasonable
+
+```{r}
+set.seed(1992)
+prior31 = extract.prior(m31, n = 1e2) # just 100 samples so I can see them
+mu = as.data.frame(link(m31, post = prior31, data = list(M = c(-2,2)))) |>
+  mutate(group = row_number())
+prior31_in = data.frame(mu = c(mu[,1], mu[,2]),
+                        group = c(rep(mu[,3],2)),
+                        x_axis = c(rep(-2, nrow(mu)), rep(2,nrow(mu))))
+ggplot(data = prior31_in, aes(x = x_axis, y = mu, group = group)) +
+  geom_line(alpha = 0.2, color = "navyblue") +
+  labs(y = "Kg Milk Fat std", x = "Log Body Mass std") +
+  theme_minimal()
+```
+
+-   when changing the values of beta and alpha, changing the alpha spread to be
+    smaller forces the lines to go closer through that center point
+-   since alpha indicates the value of the outcome, when the predictor is
+    average, a smaller alpha indicates a higher confidence that the outcome will
+    be at its average as well
+-   this may not make sense in all contexts, but might make sense in most
+-   I guess I should consider this when measuring trends of sorts
+
+```{r}
+precis(m31)
+```
+
+-   according to this, the relationship between mass and milk fat is actually
+    not certain
+-   it might be negative, indicating milk fat goes down as mass goes up, but
+    that doesn't make all that much sense and the model is not very certain
+-   lets check neocortex percentage
+
+Using the same restricted priors
+
+```{r}
+m32_params = alist(K ~ dnorm(mu, sigma),
+                   mu <- alpha + betaN*N, 
+                   alpha ~ dnorm(0,0.2),
+                   # I already log transformed mass, so it doesnt need to be
+                   # log normal, can just be normal I think
+                   betaN ~ dnorm(0,0.5),
+                   sigma ~ dexp(1))
+m32 = quap(m32_params, data = d)
+precis(m32)
+```
+
+-   this is something similar but even more widely spread
+-   can be either strongly positive or strongly negative
+-   lets plot both
+
+```{r}
+m_seq = seq(from = min(d$M)-0.15, to = max(d$M)+0.15, length.out = nrow(d))
+n_seq = seq(from = min(d$N)-0.15, to = max(d$N)+0.15, length.out = nrow(d))
+mu_m = link(m31, data = data.frame(M = m_seq), n = 1e3)
+mu_n = link(m32, data = data.frame(N = n_seq), n = 1e3)
+pi_m = apply(mu_m, 2,PI,0.95)
+pi_n = apply(mu_n, 2,PI,0.95)
+m_in = data.frame(mu = apply(mu_m, 2, mean),
+                  pi_l = pi_m[1,],
+                  pi_u = pi_m[2,],
+                  m_seq = m_seq,
+                  M = d$M, K = d$K)
+n_in = data.frame(mu = apply(mu_n, 2, mean),
+                  pi_l = pi_n[1,],
+                  pi_u = pi_n[2,],
+                  n_seq = n_seq,
+                  N = d$N, K = d$K)
+```
+
+```{r}
+mass = ggplot(data = m_in, aes(x = m_seq, y = mu, group = 1)) +
+  geom_point(aes(x = M, y = K), inherit.aes = F,
+             alpha = 0.8, color = "navyblue") +
+  geom_line(alpha = 0.5, color = "navyblue") +
+  geom_ribbon(aes(x = m_seq, ymin = pi_l, ymax = pi_u),
+              alpha = 0.2, color = "lightgrey") +
+  labs(y = "Kg Milk Fat std", x = "Log Body Mass std") +
+  theme_minimal()
+
+neocortex = ggplot(data = n_in, aes(x = n_seq, y = mu, group = 1)) +
+  geom_point(aes(x = N, y = K), inherit.aes = F,
+             alpha = 0.8, color = "navyblue") +
+  geom_line(alpha = 0.5, color = "navyblue") +
+  geom_ribbon(aes(x = n_seq, ymin = pi_l, ymax = pi_u),
+              alpha = 0.2, color = "lightgrey") +
+  labs(y = "Kg Milk Fat std", x = "Neocortex % std") +
+  theme_minimal()
+mass + neocortex + plot_layout(axis_titles = "collect", axes = "collect") +
+  plot_layout(widths = c(4,4),
+              guides = 'collect')
+```
+
+Now to combine both predictors
+
+```{r}
+m4_params = alist(
+  K ~ dnorm(mu, sigma),
+  mu <- alpha + betaN*N + betaM*M,
+  alpha ~ dnorm(0,0.2),
+  betaN ~ dnorm(0,0.5),
+  betaM ~ dnorm(0,0.5),
+  sigma ~ dexp(1)
+)
+m4 = quap(m4_params, data = d)
+precis(m4)
+```
+
+-   ah! Nnow the model is much more confident about these predictors
+-   so, as neocortex percent increases, holding mass solid, milk energy
+    increases
+-   as body mass increases, holding necortext percent solid, milk energy
+    decreases
+
+```{r}
+m_seq = data.frame(M=seq(from = -2, to = 2, length.out=17), N = 0)
+n_seq = data.frame(N=seq(from = -2, to = 2, length.out=17), M =0)
+sM = link(m4, data = m_seq, vars="K")
+sN = link(m4, data = n_seq, vars="K")
+# sim includes sigma for the whole model
+# so this is showing where the model expects the actual data points, not the mean
+sM2 = sim(m4, data = m_seq, vars="K")
+sN2 = sim(m4, data = n_seq, vars="K")
+piM = apply(sM,2,PI,0.95)
+piN = apply(sN,2,PI,0.95)
+piM2 = apply(sM2,2,PI,0.95)
+piN2 = apply(sN2,2,PI,0.95)
+plot_in = data.frame(muM = apply(sM, 2, mean),
+                     muN = apply(sN, 2, mean),
+                     m_seq = m_seq$M, n_seq = n_seq$N,
+                     piM_l = piM[1,], piM_u = piM[2,],
+                     piN_l = piN[1,], piN_u = piN[2,],
+                     piM2_l = piM2[1,], piM2_u = piM2[2,],
+                     piN2_l = piN2[1,], piN2_u = piN2[2,],
+                     K = d$K, N = d$N, M = d$M)
+```
+
+```{r}
+mass = ggplot(data = plot_in, aes(x = m_seq, y = muM, group = 1)) +
+  geom_point(aes(x = M, y = K), inherit.aes = F,
+             alpha = 0.8, color = "navyblue") +
+  geom_line(alpha = 1, color = "navyblue") +
+  geom_ribbon(aes(x = m_seq, ymin = piM_l, ymax = piM_u),
+              alpha = 0.3, color = "navyblue", fill = "navyblue") +
+  geom_ribbon(aes(x = m_seq, ymin = piM2_l, ymax = piM2_u),
+              alpha = 0.1, color = "lightgrey") +
+  labs(y = "Kg Milk Fat (std)", x = "Log Body Mass (std)") +
+  theme_minimal()
+
+neocortex = ggplot(data = plot_in, aes(x = n_seq, y = muN, group = 1)) +
+  geom_point(aes(x = N, y = K), inherit.aes = F,
+             alpha = 0.8, color = "navyblue") +
+  geom_line(alpha = 1, color = "navyblue") +
+  geom_ribbon(aes(x = n_seq, ymin = piN_l, ymax = piN_u),
+              alpha = 0.3, color = "navyblue", fill = "navyblue") +
+  geom_ribbon(aes(x = m_seq, ymin = piN2_l, ymax = piN2_u),
+              alpha = 0.1, color = "lightgrey") +
+  labs(y = "Kg Milk Fat (std)", x = "Neocortex % (std)") +
+  theme_minimal()
+mass + neocortex + plot_layout(axis_titles = "collect", axes = "collect") +
+  plot_layout(widths = c(4,4),
+              guides = 'collect')
+```
+
+-   so this shows the uncertainty around the mean, as well as the uncertainty
+    around the actual data, interestingly, there are still some true outliers,
+    where some have high kg milk fat for their lower neocortext percent and a
+    relatively low kg milk fat for the body mass, as well as relatively high
+-   I bet one of the outlier on high kg for their body mass is humans
+
+# Categorical Variables
+
+-   so typically you set a categorical variable as a 0-1 indicator (or more, 2+)
+-   there is a way to do this bayesian modelling where instead of having an
+    intercept corresponding to the 0 for all categories, each category is an
+    "index variable"
+-   index variables -\> basically each category has its own intercept
+    independent of the others
+-   have the alpha + the beta for a certain category implies greater uncertainty
+    about 1 category than another -\> this may be true occasionally but not
+    often
+
+2 Category Traditional Method
+
+```{r}
+data(Howell1) # hunter gatherer height dataset
+d = Howell1
+str(d)
+m51_params = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + beta_male*male,
+  alpha ~ dnorm(178,20),
+  beta_male ~ dnorm(10,10),
+  sigma ~ dexp(1)
+)
+m51 = quap(m51_params, data = d)
+precis(m51)
+```
+
+-   traditionally, the average height of women is 134, and the average height of
+    men is 134 + 7.55
+-   so to make it an index parameter in R, cannot have any 0s
+
+```{r}
+d$sex = ifelse(d$male == 1, 2, 1)
+m52_params = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha[sex], # index variable
+  alpha[sex] ~ dnorm(178,20), # so here I am saying each of the sex alphas
+  sigma ~ dunif(0,50)
+)
+m52 = quap(m52_params, data = d)
+precis(m52, depth = 2)
+```
+
+-   so here I can see the values for each alpah according to the index variable
+-   so the mean height for women is 134 cm and the mean height for men is 142 cm
+-   to understand the difference between them, can extract samples from the
+    posterior and calculate the mean difference
+
+```{r}
+post = extract.samples(m52)
+post$diff = post$alpha[,2] - post$alpha[,1]
+precis(post, depth = 2)
+```
+
+-   so men are on average 7.6 cm taller
+-   this calculation is called a contrast
+-   index variable approach assumes a lack of prior information about contrasts
+    or, differences in individual categories, this is not always true
+-   this can be extended to multiple categories
+
+```{r}
+data(milk)
+d = milk
+str(d)
+d$clade_id = as.integer(d$clade)
+d$K = scale(d$kcal.per.g)
+```
+
+```{r}
+m6_params = alist(
+  K ~ dnorm(mu, sigma),
+  mu <- alpha[clade_id],
+  alpha[clade_id] ~ dnorm(0,0.5),
+  sigma ~ dexp(1)
+)
+m6 = quap(m6_params, data = d)
+precis(m6, depth=2)
+```
+
+-   it can be seen that alpha behaves exactly the same as it does when there are
+    only 2 categories, however, now there are 4 and we have 4 estimates

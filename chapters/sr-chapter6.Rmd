@@ -1,0 +1,398 @@
+---
+title: "Chapter 6"
+author: "P Winston Miller"
+date: "2026-01-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+```
+
+# Simulating an example of non-causal correlation
+
+-   the purpose of this is to show how statistical correlations can arise even
+    though there is no underlying cause
+
+```{r}
+n = 1000 # submitted grants
+p = 0.1 # percent that are accepted
+df = data.frame(trust = rnorm(n),
+                news = rnorm(n))
+df$score = df$trust + df$news
+top = quantile(df$trust, 1-p)
+df$success = as.factor(ifelse(df$score >= top,1,0))
+r = paste0("cor: ",round(cor(df$trust[df$success == 1], df$news[df$success == 1]),2))
+ggplot(data = df, aes(x = news, y = trust, color = success)) +
+  geom_point(alpha = 0.8) +
+  theme_classic() +
+  geom_smooth(method = "lm", se = F) +
+  geom_text(x = -2, y = 2, label = r, color = "blue")
+```
+
+-   There is a strong negative correlation between these even tho they are not
+    related....
+
+# Simulating an example of multicollinearity
+
+-   example here is leg lengths ability to estimate height
+-   obviously, after knowing the length of 1 leg, the information provided by
+    the other leg does not add much
+-   this is a classic case of multicolinearity
+
+```{r}
+set.seed(909)
+n = 100
+height = rnorm(n, mean = 10, sd = 2)
+leg_prop = runif(n, min = 0.4, max = 0.5)
+left = height * leg_prop + rnorm(n,0,0.02)
+right = height * leg_prop + rnorm(n,0,0.02)
+model_in = data.frame(height, left, right)
+mean(leg_prop)
+```
+
+-   mean leg_prop is 0.45, since the average height is 10, then the average leg
+    length should be about 4.5
+-   therefore predicting height from leg length should end up with a beta around
+    10/4.5 = 2.2
+
+```{r}
+set.seed(909)
+m1_params = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + betaL*left + betaR*right,
+  alpha ~ dnorm(10,100),
+  betaL ~ dnorm(2,10),
+  betaR ~ dnorm(2,10),
+  sigma ~ dexp(1)
+)
+m1 = quap(m1_params, data = model_in)
+precis(m1)
+```
+
+-   weirdly the example as he gives it does not converge
+
+-   caused by setting alpha to dnorm(10,100), clearly this gives way too much
+    leeway to alpha
+
+-   I could get it to reliably estimate at a sd = 30, but not 40
+
+-   however, using the same seed he uses it does converge, this is the danger of
+    the random seed
+
+```{r}
+m1_samps = extract.samples(m1)
+mean(m1_samps$betaL + m1_samps$betaR)
+ggplot(data = m1_samps, aes(x = betaL, y = betaR)) + geom_point()
+ggplot(data = m1_samps, aes(x = betaL + betaR)) + geom_density()
+```
+
+-   also, as can be seen, the posterior of the two variables is almost perfectly
+    inversely correlated, the more height gained from the right leg, the less
+    gained from the left leg
+-   the mean of these two added together approaches 2.2, but not quite there
+-   however, when adding the two parameters together, the highest density is
+    right there around 2, which is a little low but a good estimate of the true
+    beta \@ 2.2
+
+```{r}
+set.seed(909)
+m12_params = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + betaR*right,
+  alpha ~ dnorm(10,100),
+  betaR ~ dnorm(2,10),
+  sigma ~ dexp(1)
+)
+m12 = quap(m12_params, data = model_in)
+precis(m12)
+```
+
+# Multicollinearity in the Milk Data
+
+-   this is an example of biological multicollinearity
+-   basically, this is a real example of the percent content of lactose vs fat
+    in milk
+-   really, any percentage of a component will be multicollinear with other
+    percentages of other components
+
+```{r}
+data(milk)
+milk$k = scale(milk$kcal.per.g)
+milk$f = scale(milk$perc.fat)
+milk$l = scale(milk$perc.lactose)
+```
+
+-   First, look at the two variables in a bivariate regression
+
+```{r}
+m21 = quap(alist(
+  k ~ dnorm(mu, sigma),
+  mu <- alpha + betaf*f,
+  alpha ~ dnorm(0,0.2),
+  betaf ~ dnorm(0,0.5),
+  sigma ~ dexp(1)), data = milk)
+
+m22 = quap(alist(
+  k ~ dnorm(mu, sigma),
+  mu <- alpha + betal*l,
+  alpha ~ dnorm(0,0.2),
+  betal ~ dnorm(0,0.5),
+  sigma ~ dexp(1)), data = milk)
+precis(m21);precis(m22)
+```
+
+-   lactose appears to be negatively associated with kilo-calories per gram in
+    milk
+-   whereas fat appears to be positively associated
+-   makes sense
+-   lets see what happens when I add both in
+
+```{r}
+m23 = quap(alist(
+  k ~ dnorm(mu, sigma),
+  mu <- alpha + betaf*f + betal*l,
+  alpha ~ dnorm(0,0.2),
+  betal ~ dnorm(0,0.5),
+  betaf ~ dnorm(0,0.5),
+  sigma ~ dexp(1)), data = milk)
+precis(m23)
+```
+
+-   so here beta lactose is still negative but the range is a lot wider and the
+    association is not as strong
+    -   previously it was .9 standard deviations for every 1 standard deviation
+-   now, the model is not sure if the association with beta fat is positive or
+    negative, probably weakly positive
+    -   this is pretty different from the bivariate model where it was strongly
+        positive, nearly 1 sd
+
+# Post-treatment bias
+
+-   here I am simulating the effect of a fungicide on the height growth of a
+    plant
+-   the fungicide effects the growth by removing a toxic fungus but otherwise
+    has no effect
+-   therefore, the fungus is a mediator
+
+```{r}
+set.seed(71)
+n = 100 # plants
+h0 = rnorm(n, 10, 2) # starting height of plants
+treatment = rep(0:1, each = n/2) # divide plants into treatments
+# if treatment=1 10% change of fungus, 50% chance otherwise
+fungus = rbinom(n, size = 1, prob = (0.5-treatment*0.4))
+# if fungus exists, plants grow mean of 2, sd = 1, if no fungus mean of 5
+h1 = h0 + rnorm(n,5-3*fungus)
+df = data.frame(h0, h1, treatment, fungus)
+precis(df)
+```
+
+-   above shows the distribution of the simulated variables
+-   so, since I know that plants will be taller at h1 than at h0, I need to
+    model based on proportionate growth
+-   best way to do this is to consider proportion of height so p = h1/h0
+-   then I can model the proportions, h1 = p\*h0
+    -   so if p = 1, then the plants didn't grow
+    -   if p \> 1 then plants grew some, and the higher p is, the more the
+        plants grew
+-   lets just model height first so I can understand proportion
+
+```{r}
+set.seed(71)
+m31_params = alist(
+  h1 ~ dnorm(mu, sigma),
+  mu <- p*h0,
+  p ~ dlnorm(0, 0.25),
+  sigma ~ dexp(1)
+)
+m31 = quap(m31_params, data = df)
+precis(m31)
+```
+
+-   so this says the general proportionate growth is about 43% with a standard
+    deviation of 79%?
+    -   I bet by including treatment or fungus, I can decrease that sd
+        significantly
+-   okay, here, h sets the mean as proportion of growth, but, makes the
+    proportion of growth the linear model
+    -   this is smart, I need to learn how to think like this
+
+```{r}
+set.seed(71)
+m32_params = alist(
+  h1 ~ dnorm(mu, sigma),
+  mu <- h0*p,
+  p <- alpha + betaT*treatment + betaF*fungus,
+  alpha ~ dlnorm(0,0.25), # this needs to be the base proportion
+  betaT ~ dnorm(0, 0.5),
+  betaF ~ dnorm(0, 0.5),
+  sigma ~ dexp(1)
+)
+m32 = quap(m32_params, data = df)
+precis(m32)
+```
+
+-   okay, since I included the mediatior, treatment is now nothing, whereas the
+    presence of fungus causes a -27% effect on growth
+-   I bet if I remove fungus, treatment will be a very similar positive
+    association
+
+```{r}
+set.seed(71)
+m33_params = alist(
+  h1 ~ dnorm(mu, sigma),
+  mu <- h0*p,
+  p <- alpha + betaT*treatment,
+  alpha ~ dlnorm(0,0.25), # this needs to be the base proportion
+  betaT ~ dnorm(0, 0.5),
+  sigma ~ dexp(1)
+)
+m33 = quap(m33_params, data = df)
+precis(m33)
+```
+
+-   interestingly, treatment is positive, but it is not similar
+-   the fact that fungus 0s out treatment indicates that the treatment is
+    working as expected
+
+How do I use a dag to clarify this issue?
+
+```{r}
+plant_dag = dagitty("dag {
+  H0 -> H1
+  F -> H1
+  T -> F
+}")
+ggdag(plant_dag) + theme_dag()
+```
+
+-   this is what a mediator dag looks like -\> treatment only effects height via
+    fungus
+    -   in a real experiment, this would be great!
+-   below, I show to generate implied conditional independencies from the dag
+
+```{r}
+impliedConditionalIndependencies(plant_dag)
+```
+
+-   first two show that original plant height is not associated with fungus
+-   third shows that final height is only associated with treatment conditioned
+    on fungus
+-   I do not like this notation Sam I am
+
+# Collider Bias
+
+-   when two arrows enter a variable, that is collider bias
+-   to go back to the publishing example
+
+```{r}
+pub_dag = dagitty("dag{
+  S <- trust
+  S <- news
+}")
+ggdag(pub_dag) + theme_dag()
+```
+
+-   like above, this will create a false statistical association
+-   a lot of this graph/dag analysis is only useful if you already know a lot
+    about the subject matter
+
+# Confronting Confounding
+
+-   dick uses dagitty to confront confounding
+-   so you can use daggity + a dag to tell you what variables need to be
+    conditioned on to get the appropriate regression relationship
+
+Example dag
+
+```{r}
+edag = dagitty("dag{
+  U [unobserved]
+  X -> Y
+  X <- U <- A -> C -> Y
+  U -> B <- C
+  X [exposure]
+  Y [outcome]
+}")
+edag_in = tidy_dagitty(edag) %>%
+  mutate(Observed = ifelse(name == "U", "Unobserved", "Observed"))
+ggdag(edag_in) + 
+  geom_dag_point(aes(colour = Observed)) +
+  geom_dag_text(color = "white") +
+  labs(color = "") +
+  scale_color_manual(values = c("navy", "darkred")) +
+  theme_dag_gray()
+```
+
+-   clearly dagitty doesn't care about white space, so you don't need to put
+    relationships on different lines that's just to help the human
+-   so I can use daggity to determine the variables to condition on here
+
+```{r}
+adjustmentSets(edag)
+```
+
+-   dagitty is telling me that in order to understand the true association
+    between X and Y, I need to condition on C OR A
+-   don't need to condition on B since it is a collider, and that path from B to
+    X is already closed, were we to condition on B, it would open the path
+
+Waffle House Example
+
+```{r}
+data("WaffleDivorce")
+d = WaffleDivorce
+```
+
+Waffle DAG
+
+```{r}
+wdag = dagitty("dag{
+  W [exposure]
+  D [outcome]
+  A -> M -> D
+  A -> D
+  M <- S -> A 
+  S -> W -> D
+}")
+adjustmentSets(wdag)
+```
+
+-   so here I want to know what to condition on to understand the relationship
+    between waffle houses and divorce
+-   I bet if I condition on S, there is no relationship
+
+```{r}
+# Standardize
+d_in = data.frame(W = scale(d$WaffleHouses),
+                  S = scale(d$South),
+                  D = scale(d$Divorce))
+str(d_in)
+```
+
+```{r}
+m4_params = alist(
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaS*S + betaW*W,
+  alpha ~ dnorm(0,0.5),
+  betaS ~ dnorm(0,1),
+  betaW ~ dnorm(0,1),
+  sigma ~ dexp(1)
+)
+m4 = quap(m4_params, data = d_in)
+precis(m4)
+```
+
+-   as expected, basically no association between waffles and divorce when
+    conditioning on the south
+
+# Homework Problems

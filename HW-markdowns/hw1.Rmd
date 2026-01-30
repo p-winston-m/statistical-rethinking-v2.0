@@ -1,0 +1,51 @@
+---
+title: "Homework 1"
+author: "P Winston Miller"
+date: "2026-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(patchwork)
+library(ggdag) # uses gg plot to draw the dag
+library(dagitty) # creates the dag object
+data(Howell1) # example data set for this chapter
+```
+
+```{r}
+ahw_dag = dagitty(
+  "dag {
+    age -> height
+    age -> weight
+    height -> weight
+  }")
+dag_plot = ggdag(ahw_dag, layout = "stress") + 
+  theme_dag()
+```
+
+```{r}
+df = Howell1
+df = df |> filter(age < 13)
+age_height_plot = ggplot(df, aes(x = weight, y = height, color = age)) +
+  geom_point() +
+  labs(x = "Weight (kg)", y = "Height (cm)", color = "Age") +
+  theme_classic()
+  age_height_plot + dag_plot
+```
+
+```{r}
+sim_height_weight(age){
+  weight = rnorm(n = 10, mean = )
+}
+```
+
+```{r}
+x = rexp(rate = 10, n = 1e4)
+plot(x)
+```

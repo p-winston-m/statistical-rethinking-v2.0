@@ -1,0 +1,221 @@
+---
+title: "Homework chapters 5+6"
+author: "P Winston Miller"
+date: "2026-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(patchwork)
+library(dagitty)
+library(ggdag)
+```
+
+Z-Score Function
+
+```{r}
+calc_z = function(x){
+  std = (x - mean(x))/sd(x)
+  return(std)
+}
+```
+
+```{r}
+data(foxes)
+str(foxes)
+for(i in 1:ncol(foxes)){
+  print(paste0(colnames(foxes)[i],": ")) 
+  print(range(foxes[,i]))
+}
+```
+
+-   foxes from 30 different urban gangs in england
+-   each group has its own exclusive territory
+
+```{r}
+fox_dag = dagitty("dag{
+  area -> food
+  food -> gsize
+  food -> weight
+  gsize -> weight}")
+ggdag(fox_dag) + theme_dag_gray()
+```
+
+-   looking at the effect of area on food, there is nothing I need to adjust for
+-   first scale predictors and outcomes so the priors are easier to make
+
+```{r}
+d = data.frame(
+  group = as.factor(foxes$group),
+  size = scale(foxes$groupsize),
+  area = scale(foxes$area),
+  food = scale(foxes$avgfood),
+  weight = scale(foxes$weight)
+)
+```
+
+```{r}
+mf1_params = alist(
+  food ~ dnorm(mu, sigma),
+  mu <- alpha + betaA*area,
+  alpha ~ dnorm(0,0.2),
+  betaA ~ dnorm(0,0.5),
+  sigma ~ dexp(1)
+)
+mf1 = quap(mf1_params, data = d)
+precis(mf1)
+```
+
+```{r}
+0.88*sd(foxes$area) + mean(foxes$area)
+0.88*sd(foxes$avgfood) + mean(foxes$avgfood)
+
+```
+
+-   according to this model, for every 1 standard deviation area increase (3.98)
+    there is an increase in 0.88 standard deviations in average food (0.92)
+-   this is because the dag shows only single direct link between are and food,
+    and no other effects on food
+
+```{r}
+mf2_params = alist(
+  weight ~ dnorm(mu, sigma),
+  mu <- alpha + betaF*food,
+  alpha ~ dnorm(0,0.2),
+  betaF ~ dnorm(0,0.5),
+  sigma ~ dexp(1)
+)
+mf2 = quap(mf2_params, data = d)
+precis(mf2)
+```
+
+-   okay, according to this, the way I have done it, adding food seems to have
+    no effect on the weight of foxes
+-   lets simulate an intervention on food
+
+Simulating Mu below
+
+```{r}
+food_sim = seq(from = -3, to = 3, length.out = nrow(d))
+muw = link(mf2, data = data.frame(food = food_sim))
+str(muw)
+```
+
+```{r}
+muw_mean = apply(muw,2,mean)
+muw_pi = apply(muw,2,PI,0.95)
+mf2_sim_in = data.frame(mu = muw_mean*sd(foxes$weight)+mean(foxes$weight),
+                        food_sim = food_sim*sd(foxes$avgfood)+mean(foxes$avgfood),
+                        pi_l = muw_pi[1,]*sd(foxes$weight)+mean(foxes$weight),
+                        pi_u = muw_pi[2,]*sd(foxes$weight)+mean(foxes$weight),
+                        weight = foxes$weight,
+                        food = foxes$avgfood)
+ggplot(mf2_sim_in, aes(x = food_sim, y = mu)) +
+  geom_line(alpha = 1, color = "navy") +
+  geom_point(inherit.aes = F, color = "lightblue", alpha = 0.7,
+             aes(x = food, y = weight)) +
+  geom_ribbon(inherit.aes = F, color = "navy", fill = "navy", alpha = 0.2,
+              aes(x = food_sim, ymin = pi_l, ymax = pi_u)) +
+  labs(x = "Average Food", y= "Weight of Fox") +
+  theme_minimal()
+```
+
+-   visually, simulating this, there doesn't seem to be
+-   so lets try controlling for group size and see what happens
+
+```{r}
+mf3_params = alist(
+  weight ~ dnorm(mu, sigma),
+  mu <- alpha + betaF*food + betaS*size,
+  alpha ~ dnorm(0,0.2),
+  betaF ~ dnorm(0,0.5),
+  betaS ~ dnorm(0,0.5),
+  sigma ~ dexp(1)
+)
+mf3 = quap(mf3_params, data = d)
+precis(mf3)
+```
+
+-   okay, holding food steady as group size increases, weight decreases
+-   but, holding group size steady, as food increases weight increases
+-   so, it seems that as avg food in the area increases, the fox gang gets
+    larger before the foxes themselves get larger
+-   lets try and create a counterfactual plot to show this
+
+```{r}
+food_sim = seq(from = -3, to = 3, length.out = nrow(d))
+size_sim = seq(from = -3, to = 3, length.out = nrow(d))
+muf = link(mf3, data = data.frame(food = food_sim, size = 0))
+mus = link(mf3, data = data.frame(food = 0, size = size_sim))
+```
+
+```{r}
+muf_mean = apply(muf,2,mean)
+muf_pi = apply(muf,2,PI,0.95)
+muf_in = data.frame(mu = muf_mean*sd(foxes$weight)+mean(foxes$weight),
+                    food_sim = food_sim*sd(foxes$avgfood)+mean(foxes$avgfood),
+                    pi_l = muf_pi[1,]*sd(foxes$weight)+mean(foxes$weight),
+                    pi_u = muf_pi[2,]*sd(foxes$weight)+mean(foxes$weight),
+                    weight = foxes$weight,
+                    food = foxes$avgfood,
+                    size = as.factor(foxes$groupsize))
+ggplot(muf_in, aes(x = food_sim, y = mu)) +
+  geom_line(alpha = 1, color = "navy") +
+  geom_point(inherit.aes = F, alpha = 0.7,
+             aes(x = food, y = weight, color = size)) +
+  geom_ribbon(inherit.aes = F, color = "navy", fill = "navy", alpha = 0.2,
+              aes(x = food_sim, ymin = pi_l, ymax = pi_u)) +
+  labs(x = "Average Food", y = "Weight of Fox") +
+  theme_minimal()
+```
+
+-   so now that I am controlling for group size, average food does increase fox
+    weight
+
+```{r}
+mus_mean = apply(mus,2,mean)
+mus_pi = apply(mus,2,PI,0.95)
+mus_in = data.frame(mu = mus_mean*sd(foxes$weight)+mean(foxes$weight),
+                    pi_l = mus_pi[1,]*sd(foxes$weight)+mean(foxes$weight),
+                    pi_u = mus_pi[2,]*sd(foxes$weight)+mean(foxes$weight),
+                    size_sim = size_sim*sd(foxes$groupsize)+mean(foxes$groupsize),
+                    weight = foxes$weight,
+                    food = foxes$avgfood,
+                    size = foxes$groupsize
+                    )
+ggplot(mus_in, aes(x = size_sim, y = mu)) +
+  geom_line(alpha = 1, color = "navy") +
+  geom_point(inherit.aes = F, color = "lightblue", alpha = 0.7,
+             aes(x = size, y = weight)) +
+  geom_ribbon(inherit.aes = F, color = "navy", fill = "navy", alpha = 0.2,
+              aes(x = size_sim, ymin = pi_l, ymax = pi_u)) +
+  labs(x = "Gang Size", y= "Individual Fox Weight") +
+  theme_minimal()
+```
+
+-   and when I control for average food per territory, as the fox gang size
+    increases the size of the individual foxes decreases
+
+Okay, so how does food affect group size?
+
+```{r}
+mf4_params = alist(
+  size ~ dnorm(mu, sigma),
+  mu <- alpha + betaF*food,
+  alpha ~ dnorm(0,0.2),
+  betaF ~ dnorm(0,0.5),
+  sigma ~ dexp(1)
+)
+mf4 = quap(mf4_params, data = d)
+precis(mf4)
+```
+
+-   ah, so each standard deviation in food increases group size by almost 1
+    standard deviation
+-   basically as food increases so does a fox

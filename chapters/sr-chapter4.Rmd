@@ -1,0 +1,819 @@
+---
+title: "Chapter 4 - Geocentric Models"
+author: "P Winston Miller"
+date: "2025-10-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(patchwork)
+data(Howell1) # example data set for this chapter
+```
+
+# Random Walk Example
+- so, this is basically everyone starting on the 50 yard line, and taking a step to the
+  left or right based on a coinflip
+- as expected with uniform probability, most people end up going nowhere
+```{r}
+walk_pos = replicate(1000 , 
+                     sum(runif(n = 16, # 16 samples (or steps) randomly drawn from uniform distribution
+                               min = -1, # minimum -1
+                               max = 1))) # maximum 1
+dens(walk_pos)
+```
+- so, as expected the majority of "walks" ended up going nowhere
+- lets see what happens when I transform this
+Squaring step size
+```{r}
+walk_pos = replicate(1000 , 
+                     sum(runif(n = 16, # 16 samples (or steps) randomly drawn from uniform distribution
+                               min = -1, # minimum -1
+                               max = 1 # maximum 1
+                               )^2)) # squaring the step size
+dens(walk_pos)
+```
+
+# Example of additions converging to normal growth
+```{r}
+set.seed(123)
+prod(1 + runif(n = 12, # 12 samples
+               min = 0,  # minimum value of uniform distribution
+               max = 0.1)) # maximum value of uniform distribution
+```
+- prod returns the product of all values in its arguments
+- so this command multiplies 1 + the output of runif, so it looks something like
+  this for each sample
+  (1 + 0.012) * (1+0.01) * (1+0.1) *....
+
+```{r}
+growth = replicate( 10000 , prod(1 + runif(12,0,0.1)))
+dens(growth , norm.comp=TRUE)
+```
+- even though this multiplies small numbers, multiplication of small numbers is mathematically
+  the same as addition, so, this process is basically additive
+
+# Building a Model
+1. Inspect data
+```{r}
+d = Howell1
+str(d) # structure of data frame
+precis(d) # shows a fancy data summary
+```
+
+```{r}
+d1 = d %>% filter(age >= 18) # remove kiddos since kiddo height strongly correlated with age
+dens(d1$height)
+```
+- this looks basically normal with a slightly fatter tail on the taller side
+- biologically, this make sense. People really only get so short as adults, but
+  there can be a lot of tall outliers (like me)
+- richard says that just looking at the data is not always the best idea
+  - for instance outcome could be a mix of data distributions
+
+1. The Scaffold
+- Always a good idea to plot priors first
+```{r}
+curve(dnorm( x , 178 , 20 ) , from=100 , to=250)
+```
+- so this is what the prior for the mean looks like, seems reasonable
+
+```{r}
+curve(dunif(x, 0, 50), from = -5, to = 55)
+```
+- so as we can see, any negative probability is 0 and any prob after 50 = 0
+
+2. Prior Predictive Simulation
+- the previor priors IMPLY A JOINT PRIOR DISTRIBUTION
+- by simulating this distribution, can examine how the priors I picked push
+  the posterior distribution
+- below I am taking samples from the posterior distribution *predicted* by the priors
+```{r}
+sample_mu = rnorm(1e5, 178, 20) #1
+sample_sigma = runif(1e5,0,50) #2
+prior_h = rnorm(1e5, sample_mu, sample_sigma) #3
+```
+ 1. I am taking 10,000 samples from my prior for the mean
+ 2. 10K samples from my prior for the std dev
+ 3. 10K random samples for each combination of those priors from a normal distribution
+
+```{r}
+dens(prior_h)
+sd(prior_h);mean(prior_h)
+```
+- the curve is very very smooth since there are so many samples, if you decrease sample number...
+- the joint prior distribution implies models that have a mean a little less than 200 and
+  1 standard deviation at +- 37.5 cm around a mean of 177
+- one problem is that this expects some people to have a negative height
+- it expects others to be absolute giants (300 cm is almost 10 feet tall)
+
+```{r}
+sample_mu = rnorm(100, 178, 20) #1
+sample_sigma = runif(100,0,50) #2
+prior_h = rnorm(100, sample_mu, sample_sigma) #3
+dens(prior_h)
+```
+- with less samples this is much bumpier
+
+# Quadratic Approximation
+- alist does not evalue the code within it, list does
+```{r}
+model_list = alist(
+  height ~ dnorm(mu, sigma), # the distribution model for height
+  mu ~ dnorm(178, 20), # the prior for mu
+  sigma ~ dunif(0,50) # the prior for sigma
+)
+```
+
+```{r}
+m1 = quap(model_list, data = d1)
+```
+
+```{r}
+precis(m1, prob = 0.89)
+```
+- this provides estimates for the marginal distribution of each parameter
+- marginal distribution: the plausibility of each individual parameter after averaging over the values
+  of the other parameter
+
+```{r}
+m2 = quap(
+  alist(
+    height ~ dnorm(mu, sigma), # the distribution model for height
+    mu ~ dnorm(178, 0.1), # the prior for mu
+    sigma ~ dunif(0,50) # the prior for sigma
+  ), 
+  data = d1
+)
+precis(m2)
+```
+- the estimate for mu hardly changed from the prior -> that is because we penalized
+  the spread from too far from 178
+- HOWEVER SIGMA is much, much larger than previously (3.17x larger)
+  - this is because I forced the model to be very sure that the mean was very very close
+    to 178, therefore in order to make sense of the data, it had to estimate a much larger
+    sigma
+
+# Multi-dimensional Gaussian Distribution
+- a quadratic approximation with multiple prior = a multi-dimensional gaussian distribution!
+- this means that there are covariances between all pairs of parameters
+```{r}
+vcov(m1)
+```
+- since there are only 2 paramters the matrix is pretty small
+- the diagonal is the variance, the square root of which is the sd reported in precis
+
+```{r}
+sqrt(vcov(m1)[1,1])
+```
+
+```{r}
+(cov2cor(vcov(m1)))
+```
+- in this example the parameters mu and sigma are not very informative about each
+  other
+
+# Sampling from the Posterios
+```{r}
+samps = extract.samples(m1, n = 1e4)
+precis(samps);precis(m1)
+```
+- the mean/sd of each parameter of the samples are approximately the same as from
+  the pure quadratic approximation
+
+# Linear Prediction
+- will regress height on weight
+```{r}
+(ggplot(d1, aes(x = weight, y = height)) + geom_point(size = 2) + theme_classic()) |
+(ggplot(d1, aes(x = height, y = weight)) + geom_point(size = 2) + theme_classic())
+```
+- so, there is some visual relationship here
+- as weight increases, so does height (or vice versa)
+
+Initial Weight-Height model
+```{r}
+weight_bar = mean(d1$weight)
+m2_params = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + beta*(weight - weight_bar),
+  alpha ~ dnorm(178, 20),
+  beta ~ dnorm(0,10),
+  sigma ~ dunif(0,50)
+) 
+```
+- okay, is N(0,10) a good prior for beta?
+  - do I really think that there will be a negative relationship between weight
+    and height?
+  - I think that is what beta implies, so lets check
+  
+Checking the beta prior
+- to do this, also need to check alpha prior, because alpha is the relationship when
+  weight = weight bar
+- just need to simulate possible values based on some values of x
+- lets just use the x values from the observed weights and simulate how beta responds
+1. Generate simulated values for alpha and beta
+```{r}
+alpha = rnorm(n = 100, 178, 20)
+beta = rnorm(n = 100, 0,10)
+plot_data = data.frame(x = rep(seq(from = min(weights), to = max(weights), length.out = 100), 100), # simulated weights
+                       alpha = rep(alpha, each = 100), 
+                       beta = rep(beta, each = 100)) |>
+  mutate(mu_value = alpha + beta*(x - weight_bar))
+head(plot_data)
+```
+2. Plot those values over simulated data + height
+```{r}
+ggplot(data = plot_data, aes(x = x, y = mu_value, group = alpha)) +
+  geom_line(alpha = 0.2) +
+  labs(y = "Predicted Height", x = "Simulated Weight") +
+  geom_hline(yintercept = 0, color = "red", alpha = 0.5) +
+  geom_hline(yintercept = 272, color = "blue", alpha = 0.5)
+  theme_minimal()
+```
+- okay, look at all the lines that start lower on the x-axis and increase as
+  weight decreases (slopes up to the left)
+- this indicates a negative relationship with height, that is not realistic
+- can we create a prior that doesn't have this potential in a relationship -> that will increase the predictive power
+
+3. Using the log-normal distribution for beta
+- log normal is a normal distribution where the log values of X are normal
+- all log values are positive
+```{r}
+new_beta = rlnorm(1e4, meanlog = 0, sdlog = 1)
+dens(new_beta)
+```
+- this seems really similar to a poisson distribution but with mean and sd being different
+
+```{r}
+plot_data = plot_data |>
+  mutate(lognorm_beta = rep(rlnorm(100,0,1), each = 100)) |>
+  mutate(mu_value = alpha + lognorm_beta*(x - weight_bar))
+
+(ggplot(data = plot_data, aes(x = x, y = mu_value, group = alpha)) +
+  geom_line(alpha = 0.2) +
+  labs(y = "Predicted Height", x = "Simulated Weight") +
+  geom_hline(yintercept = 0, color = "red", alpha = 0.5) +
+  geom_hline(yintercept = 272, color = "blue", alpha = 0.5) +
+  theme_minimal()) + (ggplot() + geom_density(aes(x = new_beta)))
+```
+- see, this forces all the relationships between weight and height to be positive
+- it also forces the golem to consider positive values near 0 more than positive
+  values further away from 0
+- this has the effect of making the relationship look more realistic
+
+New Weight Model
+```{r}
+weight_bar = mean(d1$weight)
+m2_params = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + beta*(weight - weight_bar),
+  alpha ~ dnorm(178, 20), # this is a prior set around what I think the mean value should be
+  beta ~ dlnorm(0,1),
+  sigma ~ dunif(0,50)
+) 
+```
+
+```{r}
+m2 = quap(flist = m2_params,
+          data = d1)
+```
+
+```{r}
+precis(m2)
+```
+
+Examine Results
+- going to use a sampling approach for this, even though it is not necessary
+1. Extract samples from the posterior
+  - will give samples for all parameters est
+    - alpha, beta, sigma
+  - this will include their correlation as well
+```{r}
+postr = extract.samples(m2, n = 1e4)
+```
+
+2. Summarize the samples
+- the mean of the quadratic approximation is the maximum a posterior
+```{r}
+alpha_map = mean(postr$alpha)
+beta_map = mean(postr$beta)
+```
+
+3. Generate the estimated mean line
+```{r}
+d1$mu = alpha_map + beta_map*(d1$weight - weight_bar)
+```
+
+
+```{r}
+ggplot(data = d1, aes(x = weight, y = height)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_line(alpha = 1, aes(y = mu, x = weight), color = "darkred") +
+  labs(y = "Height (cm)", x = "Weight (kg)") +
+  theme_classic()
+```
+
+4. Add uncertainty to that mean estimate
+- what I added above is the mean line with the highest posterior density, there
+  are other possible lines as well
+a) create a matrix of mus for each weight
+```{r}
+mu_mat = link(m2)
+str(mu_mat)
+```
+- each column is a data point, an individual in the sample
+- each row is a sampled mu value for that data point
+- to generate a distribution of mu for weights..
+```{r}
+weight_seq = seq(from = 25, to = 70, by = 1)
+mu_mat = link(m2, data = data.frame(weight = weight_seq), n = 1e3)
+str(mu_mat)
+```
+- the data in the new dataframe needs to be named the same as the data in the original
+- see, now only 46 data points
+
+```{r}
+mu_samp_mean = apply(mu_mat, 2, mean) # generate mean of samples
+mu_mat_pi = apply(mu_mat, 2, PI, prob = 0.95) # create percentile interval of samples
+str(mu_samp_mean);str(mu_mat_pi)
+mu_plot = data.frame(weight = weight_seq,
+                     mu_mean = mu_samp_mean,
+                     mu_pi_upper = mu_mat_pi[1,],
+                     mu_pi_lower = mu_mat_pi[2,])
+```
+
+```{r}
+ggplot(data = d1, aes(x = weight, y = height)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_line(data = mu_plot, aes(y = mu_mean, x = weight), color = "darkred") + # mean line
+  geom_ribbon(data = mu_plot, aes(x = weight, ymin = mu_pi_lower, ymax = mu_pi_upper), 
+              inherit.aes = F, color = "darkred", fill = "darkred", alpha = 0.2) +
+  labs(y = "Height (cm)", x = "Weight (kg)") +
+  theme_classic()
+```
+5. Now add uncertainty around heights themselves, not just the mean
+- the way this is done is is to Generate samples of heights from the correct distribution for each weight
+ - How is this done?
+ - For each weight value sample from the gaussian distribution with correct mean mu i & 
+    the sigma from the entire posterior distribution
+    - this sigma contains uncertainty around sampling heights from each gaussian distribution
+      for each weight
+    - it also contains contains the uncertainty for each mu sample, the dark red
+      shaded line above
+```{r}
+heights_sim = sim(m2 , data=list(weight = weight_seq), n=1e4)
+heights_pi = apply(heights_sim, 2 , PI , prob=0.95 )
+```
+1. sample heights from the posterior distribution
+2. calculate the x% percentile interval from the posterior distribution
+
+```{r}
+mu_plot$pi_lower = unlist(heights_pi[1,])
+mu_plot$pi_upper = unlist(heights_pi[2,])
+```
+- add above to mu_plot
+
+```{r}
+ggplot(data = d1, aes(x = weight, y = height)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_line(data = mu_plot, aes(y = mu_mean, x = weight), color = "darkred") + # mean line
+  geom_ribbon(data = mu_plot, aes(x = weight, ymin = mu_pi_lower, ymax = mu_pi_upper), 
+              inherit.aes = F, color = "darkred", fill = "darkred", alpha = 0.2) +
+  geom_ribbon(data = mu_plot, aes(x = weight, ymin = pi_lower, ymax = pi_upper), 
+              inherit.aes = F, color = "darkred", fill = "darkred", alpha = 0.2) +
+  labs(y = "Height (cm)", x = "Weight (kg)") +
+  theme_classic()
+```
+- so, there are still some outliers that the model does not capture, mostly the
+  tall skinny people and the short people, typically but not necessarily if the
+  shorts are fat
+
+# Polynomial Curved Lines
+- polynomials are just squares and cubes typically, but, very very hard to
+  interpret causally
+
+For the polynomial, lets use all the howell data
+```{r}
+str(d)
+ggplot(data = d, aes(x = weight, y = height)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  labs(y = "Height (cm)", x = "Weight (kg)") +
+  theme_classic()
+```
+- now that I include the children, there is an obviously curved relationship
+  where the kids get taller without gaining as much weight unlike the adults
+
+```{r}
+d$weight_std = (d$weight - mean(d$weight))/sd(d$weight)
+d$weight_std2 = d$weight_std^2
+d$weight_std3 = d$weight_std^3
+```
+- standardize weight
+- create the polynomials
+
+```{r}
+m3_params1 = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + beta1*weight_std,
+  alpha ~ dnorm(178, 20),
+  beta1 ~ dlnorm(0,1),
+  sigma ~ dunif(0,50)
+)
+
+m3_params2 = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + beta1*weight_std + beta2*weight_std2,
+  alpha ~ dnorm(178, 20),
+  beta1 ~ dlnorm(0,1),
+  beta2 ~ dnorm(0,1),
+  sigma ~ dunif(0,50)
+)
+
+m3_params3 = alist(
+  height ~ dnorm(mu, sigma),
+  mu <- alpha + beta1*weight_std + beta2*weight_std2 + beta3*weight_std3,
+  alpha ~ dnorm(178, 20),
+  beta1 ~ dlnorm(0,1),
+  beta2 ~ dnorm(0,1),
+  beta3 ~ dnorm(0,1),
+  sigma ~ dunif(0,50)
+)
+```
+
+```{r}
+m31 = quap(flist = m3_params1, data = d)
+m32 = quap(flist = m3_params2, data = d)
+m33 = quap(flist = m3_params3, data = d)
+```
+
+```{r}
+precis(m31);precis(m32);precis(m33)
+```
+- this is a great example of how it is hard to interpret the polynomia
+- what does -7.8 really mean, that height decreases by 7.8 cm as every kg^2 increases by 1 unit?
+
+Graph the basic data models
+```{r}
+ggplot(data = d, aes(x = weight, y = height)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  labs(y = "Height (cm)", x = "Weight (kg)") +
+  theme_classic()
+```
+
+Generate samples for mean, 95% sd and 95% sigma for each models
+```{r}
+weight_seq = seq(from = -3, to = 3, length.out = 30)
+m31_mat = link(m31, data = data.frame(weight_std = weight_seq), n = 1e3)
+m32_mat = link(m32, data = data.frame(weight_std = weight_seq,
+                                      weight_std2 = weight_seq^2), n = 1e3)
+m33_mat = link(m33, data = data.frame(weight_std = weight_seq,
+                                      weight_std2 = weight_seq^2,
+                                      weight_std3 = weight_seq^3), n = 1e3)
+
+```
+
+```{r}
+mu31_pi = apply(m31_mat, 2, PI, prob = 0.95)
+sigma31 = sim(m31 , data = list(weight_std = weight_seq), n=1e4)
+sigma31_pi = apply(sigma31, 2 , PI , prob=0.95 )
+m31_plot_in = data.frame(weight_std = weight_seq,
+                         mu_mean = apply(m31_mat, 2, mean),
+                         mu_pi_lower = unlist(mu31_pi[1,]),
+                         mu_pi_upper = unlist(mu31_pi[2,]),
+                         sigma_pi_lower = unlist(sigma31_pi[1,]),
+                         sigma_pi_upper = unlist(sigma31_pi[2,]))
+```
+
+```{r}
+mu32_pi = apply(m32_mat, 2, PI, prob = 0.95)
+sigma32 = sim(m32 , data = list(weight_std = weight_seq,
+                                weight_std2 = weight_seq^2), n=1e4)
+sigma32_pi = apply(sigma32, 2 , PI , prob=0.95 )
+m32_plot_in = data.frame(weight_std = weight_seq,
+                         mu_mean = apply(m32_mat, 2, mean),
+                         mu_pi_lower = unlist(mu32_pi[1,]),
+                         mu_pi_upper = unlist(mu32_pi[2,]),
+                         sigma_pi_lower = unlist(sigma32_pi[1,]),
+                         sigma_pi_upper = unlist(sigma32_pi[2,]))
+```
+
+```{r}
+mu33_pi = apply(m33_mat, 2, PI, prob = 0.95)
+sigma33 = sim(m33 , data = list(weight_std = weight_seq,
+                                weight_std2 = weight_seq^2,
+                                weight_std3 = weight_seq^3), n=1e4)
+sigma33_pi = apply(sigma33, 2 , PI , prob=0.95 )
+m33_plot_in = data.frame(weight_std = weight_seq,
+                         mu_mean = apply(m33_mat, 2, mean),
+                         mu_pi_lower = unlist(mu33_pi[1,]),
+                         mu_pi_upper = unlist(mu33_pi[2,]),
+                         sigma_pi_lower = unlist(sigma33_pi[1,]),
+                         sigma_pi_upper = unlist(sigma33_pi[2,]))
+```
+
+```{r}
+m31_plot = ggplot(data = d, aes(x = weight_std, y = height)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_line(data = m31_plot_in, aes(y = mu_mean, x = weight_std), color = "darkred") + # mean line
+  geom_ribbon(data = m31_plot_in, aes(x = weight_std, ymin = mu_pi_lower, ymax = mu_pi_upper), 
+              inherit.aes = F, color = "darkred", fill = "darkred", alpha = 0.2) +
+  geom_ribbon(data = m31_plot_in, aes(x = weight_std, ymin = sigma_pi_lower, ymax = sigma_pi_upper), 
+              inherit.aes = F, color = "lightgrey", fill = "lightgrey", alpha = 0.2) +
+  labs(y = "Height (cm)", x = " Standardized Weight (kg)") +
+  theme_classic()
+m31_plot
+```
+- so, pretty bad fit in the middle and at the begining
+
+```{r}
+m32_plot = ggplot(data = d, aes(x = weight_std, y = height)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_line(data = m32_plot_in, aes(y = mu_mean, x = weight_std), color = "darkred") + # mean line
+  geom_ribbon(data = m32_plot_in, aes(x = weight_std, ymin = mu_pi_lower, ymax = mu_pi_upper), 
+              inherit.aes = F, color = "darkred", fill = "darkred", alpha = 0.2) +
+  geom_ribbon(data = m32_plot_in, aes(x = weight_std, ymin = sigma_pi_lower, ymax = sigma_pi_upper), 
+              inherit.aes = F, color = "lightgrey", fill = "lightgrey", alpha = 0.2) +
+  labs(y = "Height (cm)", x = " Standardized Weight (kg)") +
+  theme_classic()
+m32_plot
+```
+- this is a better fit at the begining, but still not great in the middle nor
+  towards the end
+
+```{r}
+m33_plot = ggplot(data = d, aes(x = weight_std, y = height)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_line(data = m33_plot_in, aes(y = mu_mean, x = weight_std), color = "darkred") + # mean line
+  geom_ribbon(data = m33_plot_in, aes(x = weight_std, ymin = mu_pi_lower, ymax = mu_pi_upper), 
+              inherit.aes = F, color = "darkred", fill = "darkred", alpha = 0.2) +
+  geom_ribbon(data = m33_plot_in, aes(x = weight_std, ymin = sigma_pi_lower, ymax = sigma_pi_upper), 
+              inherit.aes = F, color = "lightgrey", fill = "lightgrey", alpha = 0.1) +
+  labs(y = "Height (cm)", x = " Standardized Weight (kg)") +
+  theme_classic()
+m33_plot
+```
+- best fit so far!
+
+# Basis Splines
+- using a different data set for this
+- cherry blossoming in japan
+```{r}
+data("cherry_blossoms")
+d = cherry_blossoms
+d1 = d[complete.cases(d$temp),]
+precis(d1)
+```
+
+- when the x-axis is a smooth consistent variable like year, then setting knots
+  as various percentiles makes sense
+```{r}
+knots1 = quantile(d1$year, probs = seq(0,1,length.out = 15))
+knots1 = knots1[-c(1,15)] # want to remove 0% & 100%
+knots1_in = data.frame(knots = knots1)
+```
+- once you have the knots (spline inflection points), can construct the splines
+
+```{r}
+library(splines)
+basis_splines = bs(d1$year,
+                   knots = knots1,
+                   degree = 3,
+                   intercept = T)
+str(basis_splines)
+head(basis_splines)
+```
+- each row corresponds to a year
+- each column is the basis function which corresponds to a specific span of years
+  - there are 17 of them here
+
+```{r}
+plot_in = merge(d1[,1], basis_splines, by = 0) |>
+  select(-c('Row.names')) |>
+  rename("year" = "x") |>
+  pivot_longer(
+    cols = -year,
+    values_to = "basis")
+ggplot(data = plot_in, aes(x = year, y = basis, group = name)) +
+  geom_line(alpha = 0.5) +
+  geom_point(data = knots1_in, aes(x = knots, y = 1), 
+             inherit.aes = F, size = 3, shape = 8, color = "darkblue") +
+  theme_classic()
+```
+- so these are the basis spline priors I have set up essentially
+- I don't really understand what this means or how to create or decide on these
+  kinds or priors myself
+- I guess if I want to do something like this, I just look at model fit and work
+  iteratively from there
+
+Basis Model
+```{r}
+d1
+```
+- so here, we are looking to fit a line to the temperature of the flowering time
+  across time, so each data point is a year
+- in other words regressing temperature on the basis functions I decided on
+  and fitting weights to the basis functions
+  
+```{r}
+m4_params = alist(Temp ~ dnorm(mu, sigma),
+                  mu <- alpha + basis_splines %*% weight,
+                  alpha ~ dnorm(6,10),
+                  weight ~ dnorm(0,1),
+                  sigma ~ dexp(1))
+m4 = quap(flist = m4_params,
+          data = list(Temp = d1$temp, basis_splines = basis_splines),
+          start = list(weight=rep(0, ncol(basis_splines))))
+```
+
+```{r}
+precis(m4, depth =2)
+```
+- it automatically hides the weight values
+- also, these don't really mean anything, need to look at the line fit to
+  determine what is happening
+- so, need to take samples
+
+Extract and look at the basis functions when the weight is considered
+```{r}
+samps = extract.samples(m4, depth = 2)
+mean_weight = apply(samps$weight, 2, mean)
+mean_weight
+```
+
+```{r}
+basis_splines_weight = sweep(basis_splines, 2, mean_weight,"*")
+plot_in = merge(d1[,1], basis_splines_weight, by = 0) |>
+  select(-c('Row.names')) |>
+  rename("year" = "x") |>
+  pivot_longer(
+    cols = -year,
+    values_to = "basis")
+ggplot(data = plot_in, aes(x = year, y = basis, group = name)) +
+  geom_line(alpha = 0.5) +
+  geom_point(data = knots1_in, aes(x = knots, y = 2), 
+             inherit.aes = F, size = 3, shape = 8, color = "darkblue") +
+  theme_classic()
+```
+- so these are the splines after they have been transformed by the estimated weights
+
+```{r}
+mu_link = link(m4)
+mu_pi = apply(mu_link,2,PI,0.95)
+mu_mean = apply(mu_link,2,mean)
+plot_in = d1 |> 
+  mutate(mu_pi_lower = mu_pi[1,]) |>
+  mutate(mu_pi_upper = mu_pi[2,]) |>
+  mutate(mu_mean = mu_mean)
+ggplot(data = plot_in, aes(x = year, y = temp)) +
+  geom_point(color = "blue", alpha = 0.4) +
+  geom_line(aes(x = year, y = mu_mean), 
+            color = "darkblue", size = 1, alpha = 1) +
+  geom_ribbon(aes(x = year, ymin = mu_pi_lower, ymax = mu_pi_upper),
+              alpha= 0.2, color = "darkblue") +
+  theme_classic()
+```
+- lets try changing the degree of the knots and see what happens
+
+```{r}
+basis_splines = bs(d1$year,
+                   knots = knots1,
+                   degree = 2,
+                   intercept = T)
+m4_params = alist(Temp ~ dnorm(mu, sigma),
+                  mu <- alpha + basis_splines %*% weight,
+                  alpha ~ dnorm(6,10),
+                  weight ~ dnorm(0,1),
+                  sigma ~ dexp(1))
+m4 = quap(flist = m4_params,
+          data = list(Temp = d1$temp, basis_splines = basis_splines),
+          start = list(weight=rep(0, ncol(basis_splines))))
+mu_link = link(m4)
+mu_pi = apply(mu_link,2,PI,0.95)
+mu_mean = apply(mu_link,2,mean)
+plot_in = d1 |> 
+  mutate(mu_pi_lower = mu_pi[1,]) |>
+  mutate(mu_pi_upper = mu_pi[2,]) |>
+  mutate(mu_mean = mu_mean)
+ggplot(data = plot_in, aes(x = year, y = temp)) +
+  geom_point(color = "blue", alpha = 0.4) +
+  geom_line(aes(x = year, y = mu_mean), 
+            color = "darkblue", size = 1, alpha = 1) +
+  geom_ribbon(aes(x = year, ymin = mu_pi_lower, ymax = mu_pi_upper),
+              alpha= 0.2, color = "darkblue") +
+  theme_classic()
+```
+- degree = 2 seems to shift the bends over to the right and make it less bendy in general
+- changing degree to 4 seems to have a ver similar effect
+- degree = 1 makes the lines straight, since there is no polynomial
+- degree =5 makes it slightly more bendy, but doesn't seem to visually improve fit
+  over degree = 3
+
+Try increasing knotds
+```{r}
+n_knots = 40
+knots1 = quantile(d1$year, probs = seq(0,1,length.out = n_knots))
+knots1 = knots1[-c(1,n_knots)] # want to remove 0% & 100%
+knots1_in = data.frame(knots = knots1)
+basis_splines = bs(d1$year,
+                   knots = knots1,
+                   degree = 5,
+                   intercept = T)
+m4_params = alist(Temp ~ dnorm(mu, sigma),
+                  mu <- alpha + basis_splines %*% weight,
+                  alpha ~ dnorm(6,10),
+                  weight ~ dnorm(0,1),
+                  sigma ~ dexp(1))
+m4 = quap(flist = m4_params,
+          data = list(Temp = d1$temp, basis_splines = basis_splines),
+          start = list(weight=rep(0, ncol(basis_splines))))
+mu_link = link(m4)
+mu_pi = apply(mu_link,2,PI,0.95)
+mu_mean = apply(mu_link,2,mean)
+plot_in = d1 |> 
+  mutate(mu_pi_lower = mu_pi[1,]) |>
+  mutate(mu_pi_upper = mu_pi[2,]) |>
+  mutate(mu_mean = mu_mean)
+ggplot(data = plot_in, aes(x = year, y = temp)) +
+  geom_point(color = "blue", alpha = 0.4) +
+  geom_line(aes(x = year, y = mu_mean), 
+            color = "darkblue", size = 1, alpha = 1) +
+  geom_ribbon(aes(x = year, ymin = mu_pi_lower, ymax = mu_pi_upper),
+              alpha= 0.2, color = "darkblue") +
+  theme_classic()
+```
+- increasing knots to 16 didn't seem to change the outcome very much
+- increasing them to 40 seemed to change the fit a lot, interestingly it fit the
+  extreme outliers better, but some of the less extrem outliers less well
+- it also seems to make the 95% PI more concentrated than with just 15 knots
+  
+```{r}
+n_knots = 5
+knots1 = quantile(d1$year, probs = seq(0,1,length.out = n_knots))
+knots1 = knots1[-c(1,n_knots)] # want to remove 0% & 100%
+knots1_in = data.frame(knots = knots1)
+basis_splines = bs(d1$year,
+                   knots = knots1,
+                   degree = 5,
+                   intercept = T)
+m4_params = alist(Temp ~ dnorm(mu, sigma),
+                  mu <- alpha + basis_splines %*% weight,
+                  alpha ~ dnorm(6,10),
+                  weight ~ dnorm(0,1),
+                  sigma ~ dexp(1))
+m4 = quap(flist = m4_params,
+          data = list(Temp = d1$temp, basis_splines = basis_splines),
+          start = list(weight=rep(0, ncol(basis_splines))))
+mu_link = link(m4)
+mu_pi = apply(mu_link,2,PI,0.95)
+mu_mean = apply(mu_link,2,mean)
+plot_in = d1 |> 
+  mutate(mu_pi_lower = mu_pi[1,]) |>
+  mutate(mu_pi_upper = mu_pi[2,]) |>
+  mutate(mu_mean = mu_mean)
+ggplot(data = plot_in, aes(x = year, y = temp)) +
+  geom_point(color = "blue", alpha = 0.4) +
+  geom_line(aes(x = year, y = mu_mean), 
+            color = "darkblue", size = 1, alpha = 1) +
+  geom_ribbon(aes(x = year, ymin = mu_pi_lower, ymax = mu_pi_upper),
+              alpha= 0.2, color = "darkblue") +
+  theme_classic()
+```
+- as expected, 5 equally spaced knots hardly fits the fluxuations at all
+
+# Homework
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

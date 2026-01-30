@@ -1,0 +1,271 @@
+---
+title: "Chapter 7"
+author: "P Winston Miller"
+date: "2026-01-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+```
+
+# Understanding Model Comparison
+
+-   in the notes, have talked about regularizing priors, utilizing
+    cross-validation, WAIC, pareto smoothing, and robust regression using
+    students t-distribution
+-   not going to repeat all of the simulated code, just going to walk through
+    using the actual information metrics
+
+### WAIC with Plant Data
+
+Recreate plant data
+
+```{r}
+set.seed(71)
+n = 100 # plants
+h0 = rnorm(n, 10, 2) # starting height of plants
+treatment = rep(0:1, each = n/2) # divide plants into treatments
+# if treatment=1 10% change of fungus, 50% chance otherwise
+fungus = rbinom(n, size = 1, prob = (0.5-treatment*0.4))
+# if fungus exists, plants grow mean of 2, sd = 1, if no fungus mean of 5
+h1 = h0 + rnorm(n,5-3*fungus)
+df = data.frame(h0, h1, treatment, fungus)
+precis(df)
+
+```
+
+Recode models
+
+```{r}
+set.seed(71)
+plant_alpha = quap(alist(
+  h1 ~ dnorm(mu, sigma),
+  mu <- p*h0,
+  p ~ dlnorm(0, 0.25),
+  sigma ~ dexp(1)), data = df)
+
+plant_treat = quap(alist(
+  h1 ~ dnorm(mu, sigma),
+  mu <- h0*p,
+  p <- alpha + betaT*treatment,
+  alpha ~ dlnorm(0, 0.25),
+  betaT ~ dnorm(0,0.5),
+  sigma ~ dexp(1)), data = df)
+
+plant_treat_fungus = quap(alist(
+  h1 ~ dnorm(mu, sigma),
+  mu <- h0*p,
+  p <- alpha + betaT*treatment + betaF*fungus,
+  alpha ~ dlnorm(0, 0.25),
+  c(betaT,betaF) ~ dnorm(0,0.5),
+  sigma ~ dexp(1)), data = df)
+```
+
+-   now to use WAIC to see the out-of-sample deviance for the first model
+
+```{r}
+WAIC(plant_alpha)
+```
+
+-   can compare all the models using the convenience function
+
+```{r}
+compare(plant_alpha,plant_treat,plant_treat_fungus)
+```
+
+-   surprisingly, plant treatment + fungus is the lowest out of sample deviance,
+    even though I know from the simulation is that fungus is simulated based on
+    treatment
+-   dWAIC is the difference in WAIC scores
+-   SE = the approximate error for WAIC, dSE = approximate error for dWAIC
+    -   assumption is that WAIC is normally distributed
+        -   the mean = WAIC
+        -   standard deviation = calculated standard error
+    -   the difference scores work the same way
+-   so to trule compare, need to look at differences and standard error of
+    differences
+-   doing this, plant3 is still way better than plant1 or plant2
+-   this is an example of how using these scores can lead to model
+    mis-selection, the model including the fungus is an incorrect causal model
+    because the treatment causes the fungus
+-   so, when I know fungus status, there is no additional information gained by
+    knowing treatment
+-   this leads WAIC to penalize the mode with the unnecessary parameter
+
+```{r}
+precis(plant_treat)
+```
+
+```{r}
+plot(compare(plant_alpha,plant_treat,plant_treat_fungus))
+```
+
+-   this is just a visual comparison of what was above
+    -   so the model with treatment + fungus has far lower out of sample
+        deviance than the intercept model or the model with just treatment
+    -   what is very interesting to me is that out of sample deviance for both
+        is very similar
+-   filled are within-sample deviance
+-   clear are predicted out-of-sample deviance
+
+Can calculate the differences pointwise
+
+```{r}
+waic1 = WAIC(plant1, pointwise = T)
+waic1
+sum(waic1$WAIC)
+```
+
+-   this calculates the WAIC for each case
+-   summing the WAIC columns gives the WAIC value reported for the whole model
+    -   well, there is sampling variance, but that is what the waic value is
+
+```{r}
+compare(plant_alpha,plant_treat,plant_treat_fungus)
+compare(plant_alpha,plant_treat,plant_treat_fungus)@dSE
+```
+
+-   the second table shows all the pairwise standard errors for the differences
+    between the models
+-   note that the difference between plant_treat and plant_alpha is larger than
+    the difference between them 3.2 = abs(44.9-41.7)
+-   this means that on the basis of WAIC, these models are indistinguishable
+
+# Identifying Outliers
+
+-   going to be using the divorce dataset
+
+```{r}
+data("WaffleDivorce")
+df1 = data.frame(A = scale(WaffleDivorce$MedianAgeMarriage),
+                 M = scale(WaffleDivorce$Marriage),
+                 D = scale(WaffleDivorce$Divorce))
+precis(df1)
+```
+
+```{r}
+agem = quap(alist(
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaA*A,
+  alpha ~ dnorm(0,0.2),
+  betaA ~ dnorm(0,0.5),
+  sigma ~ dexp(1)), data = df1)
+marm = quap(alist(
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaM*M,
+  alpha ~ dnorm(0,0.2),
+  betaM ~ dnorm(0,0.5),
+  sigma ~ dexp(1)), data = df1)
+fullm = quap(alist(
+  D ~ dnorm(mu, sigma),
+  mu <- alpha + betaM*M + betaA*A,
+  alpha ~ dnorm(0,0.2),
+  c(betaM, betaA) ~ dnorm(0,0.5),
+  sigma ~ dexp(1)), data = df1)
+```
+
+```{r}
+precis(agem)
+```
+
+```{r}
+precis(marm)
+```
+
+```{r}
+precis(fullm)
+```
+
+-   reminder that marriage rate (how many people get married) has very little
+    association with divorce when age at marriage is known
+
+```{r}
+set.seed(1992)
+compare(agem, marm, fullm, func=PSIS)
+```
+
+-   for each model it gives me a warning that the pareto k values are very high
+    -   these K values are the importance weights for each case
+    -   when the importance is very high, that case is influential for model
+        fitting
+    -   these cases can make out of sample prediction worse essentially
+-   this is an indicator for outliers
+-   pPSIS = fit-within-sample
+-   PSIS = predicted-out-of-sample fit
+-   notice that the model with the best out of sample fit (just age as a
+    predictor) fits worse than the the one with both within sample
+    -   also, notice the out of sample fit is only 1.3 with a standard error of
+        1.01, basically very marginally better out of sample
+
+Lets look at individual cases to see which ones are influential
+
+```{r}
+set.seed(1992)
+psis_full = PSIS(fullm, n = 1000, pointwise = T)
+waic_full = WAIC(fullm, n = 1000, pointwise = T)
+```
+
+```{r}
+psis_full;waic_full
+```
+
+```{r}
+p_in = data.frame(waic_penalty = waic_full$penalty,
+                  psis_k = psis_full$k, state = WaffleDivorce$Location)
+p_in$kl = p_in$state[ifelse(p_in$psis_k >= max(p_in$psis_k)*0.9, T, NA)]
+ggplot(data = p_in, aes(x = psis_k, y = waic_penalty, color = psis_k)) +
+  geom_point() + 
+  geom_text(aes(label = kl), position = position_dodge()) +
+  theme_classic()
+```
+
+-   the lighter blue points are th ones with the higher k penalty
+-   that sometimes corresponds with the WAIC penalty, but not always
+-   pareto K \> 0.5 or WAIC \> 2 is a warning sign of overfitting or an outlier
+-   to deal with the idaho outlier we can use robust regression!
+    -   to maintain the "gaussian" approach, can use the student-t distribution
+        to model divorce rates
+    -   this allows for fatter tails and a more robust mean estimation less
+        sensitive to outliers
+        -   v is the measurement for tails as v -\> infinity it becomes gaussian
+        -   v = 1 are the fattest tails
+        -   by assuming v is small, can reduce influence of outliers
+
+# Robust regression
+
+-   use students t distribution with a small v as the distribution for divorce
+    rate
+
+```{r}
+m_stud = quap(alist(
+  D ~ dstudent(2, mu, sigma),
+  mu <- alpha + betaM*M + betaA*A,
+  alpha ~ dnorm(0,0.2),
+  betaM ~ dnorm(0,0.5),
+  betaA ~ dnorm(0, 0.5),
+  sigma ~ dexp(1)), data = df1)
+```
+
+```{r}
+precis(m_stud)
+```
+
+-   so, while betaM is still non significant, the effect of age is even stronger
+    negative
+
+```{r}
+compare(fullm, m_stud, func=PSIS)
+```
+
+-   and I do not get that warning about outliers from PSIS + the PSIS is only
+    modestly larger and the standard error of the difference indicates that
+    difference is not meaningful
