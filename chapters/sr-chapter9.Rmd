@@ -1,0 +1,196 @@
+---
+title: "Chapter 9"
+author: "P Winston Miller"
+date: "2026-02-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+set_cmdstan_path("/Users/winston/miniconda3/envs/stan/bin/cmdstan")
+```
+
+# Markov Chain Monte Carlo (MCMC)
+
+-   basically a way to estimate the posterior distribution through sampling
+-   various samples, Gibbs and Metropolis-Hastings are what is covered in the
+    book
+-   INLA is another sampling method
+-   Dick claims Hamiltonian Monte Carlo is the best at time of writing, it is
+    also what is built into stan which is the underlying package for brms and
+    pymc3
+-   INLA uses gaussian random markov fields, which are more limited in model
+    estimation, but are much much faster than MH with a similar accuracy
+    according to my brief research
+
+### Repeating the ruggedness-log_gdp example but now using the MCMC sampler
+
+```{r}
+data(rugged)
+d = data.frame(
+  log_gdp = log(rugged$rgdppc_2000_m),
+  ruggedness = rugged$rugged,
+  africa = rugged$cont_africa)
+d = d[complete.cases(d),]
+d$log_gdp_std = d$log_gdp/mean(d$log_gdp)
+d$ruggedness_std = d$ruggedness/max(d$ruggedness)
+d$africa = ifelse(d$africa == 1, 1, 2)
+r_bar = mean(d$ruggedness_std)
+d$r_std = d$ruggedness_std - r_bar
+d_in = list(africa = d$africa, r_std = d$r_std, log_gdp_std = d$log_gdp_std)
+```
+
+```{r}
+params_list = alist(
+  log_gdp_std ~ dnorm(mu, sigma),
+  mu <- alpha[africa] + bR[africa]*r_std,
+  alpha[africa] ~ dnorm(1, 0.2),
+  bR[africa] ~ dnorm(0,0.25),
+  sigma ~ dexp(1)
+)
+```
+
+quadratic approximation method
+
+```{r}
+mq = quap(params_list, data = d_in)
+```
+
+mcmc method
+
+-   input for this is trickier
+-   requires the input to contain only that which is used for the model, but I
+    already did that which is fine
+
+```{r}
+mm = ulam(params_list, data = d_in, chains = 4, cores = 4)
+```
+
+```{r}
+show(mm)
+```
+
+-   so we got 2000 samples from all 4 chains which is expected
+    -   total samples = 1000
+    -   half are warm-up = 500
+    -   rest are inference = 500
+    -   4 chains = 4\*500 = 2000
+-   the formula also looks correct
+
+```{r}
+precis(mq, depth = 2)
+```
+
+```{r}
+precis(mm, depth = 2)
+```
+
+-   as expected both results are the same for this simple model
+-   rhat is 1 or very close, which indicates convergence of the markov chain so
+    the inferences can be "trusted"
+-   ess_bulk indicates the number of samples fro the chain. Due to the
+    anti-correlation properties of some samples, the total number of effective
+    samples can be higher than what was requested
+-   I don't entirely understand how the Stan engine works but I can't understand
+    everything so I am content to know how to use the diagnostics and move on
+
+Trace Plots
+
+-   these are a visualization of the sampling process of HMC
+-   they provide a quick diagnostic look
+-   an ideal chain will stay around a central tendency, with fewer extreme
+    values
+-   specifically look for 3 things
+    1.  Stationarity -\> the central tendency or path of the chain remains
+        stable
+    2.  Good mixing -\> the chain rapidly explores the full posterior region,
+        and then continues to explore it (so, bounces up and down a reasonable
+        amount)
+    3.  Convergence -\> multiple chains show similar behavior
+-   He prefers trankplots, which are histograms of all the chains
+    -   This is new, I have never used this before but I like it
+    -   The big question is whether these are easy to make for other packages..
+
+```{r}
+traceplot(mm, chains = c(1,2,3,4))
+```
+
+-   these are trace plots for each parameter for all 4 chains
+-   the grey area is the warmup, and the white is the sampling
+-   these are well behaved chains, they all cover the same space, they have a
+    central tendency, and tend to quickly explore the full posterior area
+
+```{r}
+trankplot(mm)
+```
+
+-   it seems like one chain, and never the same one, will give more extreme
+    values for different parameters
+-   I find these trank plots more confusing, I think there are better
+    diagnostics and the trace plot is good enough for me
+
+Examples of bad chains
+
+-   first lets simulate bad data and a bad model
+
+```{r}
+set.seed(11)
+y = c(-1,1)
+m_bad =  ulam(alist(
+  y ~ dnorm(mu, sigma),
+  mu ~ dnorm(0,10000),
+  sigma ~ dexp(0.0001)), data=list(y=y) ,chains = 3, cores = 3)
+
+```
+
+-   interesting that for a deliberately bad model, only 5% of transitions ended
+    in divergence
+
+```{r}
+precis(m_bad)
+```
+
+-   well this is way off
+-   rhat is not 1 or even close to 1 and the effective sample size is a fraction
+    of the 1500 it should be
+-   mu should be 0 basically with a sd between 1 and 2
+-   lets look at the trace plots
+
+```{r}
+traceplot(m_bad, chains = 1)
+traceplot(m_bad)
+```
+
+-   so that shows neither stationary, convergence, nor good mixing
+-   I bet I can fix this by adding a sensible prior
+
+```{r}
+set.seed(11)
+y = c(-1,1)
+m_better =  ulam(alist(
+  y ~ dnorm(mu, sigma),
+  mu ~ dnorm(0,10),
+  sigma ~ dexp(1)), data=list(y=y) ,chains = 3, cores = 3)
+precis(m_better)
+```
+
+-   estimates are much better, effective sample size is still bad
+
+```{r}
+traceplot(m_better)
+```
+
+-   still not real great, but a little better, there is at least a central
+    tendency and some convergence, although the mixing is not great
+
+```{r}
+
+```
