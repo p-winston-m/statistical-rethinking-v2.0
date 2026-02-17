@@ -1,0 +1,113 @@
+---
+title: "Homework 1"
+author: "P Winston Miller"
+date: "2026-01-30"
+output: html_document
+---
+
+# Rethinking
+
+-   first I will solve these problems with the rethinking package
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.height=6.75,fig.width=8)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+set_cmdstan_path("/Users/winston/miniconda3/envs/stan/bin/cmdstan") # sets stan path mcmc
+library(patchwork)
+library(ggdag) # uses gg plot to draw the dag
+library(dagitty) # creates the dag object
+data(Howell1) # example data set for this chapter
+```
+
+```{r}
+ahw_dag = dagitty(
+  "dag {
+    age -> height
+    age -> weight
+    height -> weight
+  }")
+```
+
+```{r,fig.height=6.75,fig.width=4}
+dag_plot = ggdag(ahw_dag, layout = "stress") + 
+  theme_dag()
+dag_plot
+```
+
+```{r}
+sim_height = function(age, n, bah){
+  height = rnorm(n = n, mean = age*bah, sd = 2)
+  return(height)}
+sim_weight = function(age, bah, baw, bhw){
+  n = length(age)
+  height = sim_height(age, n, bah)
+  weight = rnorm(n = n, mean = height*bhw + age*baw, sd = 2)
+  d = data.frame(age = age, weight = weight, height = height)
+  return(d)
+}
+```
+
+```{r}
+sim_d = sim_weight(age = runif(n = 30, min = 1, max = 13), bah = 3, baw = 0.5, bhw = 1)
+sim_d |> filter(age > 12 & age <= 13)
+x = apply(sim_d |> filter(age > 12 & age <= 13),2,mean)
+x
+```
+
+```{r}
+df = Howell1
+df = df |> filter(age < 13)
+age_height_plot = ggplot(df, aes(x = weight, y = height, color = age)) +
+  geom_point() +
+  labs(x = "Weight (kg)", y = "Height (cm)", color = "Age") +
+  theme_classic()
+  
+(age_height_plot) / dag_plot
+```
+
+```{r}
+set.seed(1992)
+params = alist(
+  weight ~ dnorm(mu, sigma),
+  mu <- alpha + bA*age,
+  alpha ~ dnorm(3, 1),
+  bA ~ dunif(0,10),
+  sigma ~ dexp(1)
+)
+m1 = ulam(params, data = df, chains = 1, cores = 1, iter = 1000)
+```
+
+```{r}
+precis(m1)
+```
+
+-   this says about 1.41 kg per year of growth
+-   lets graph and see how that lines up with the data
+
+```{r}
+age_seq = seq(from = min(df$age), to = max(df$age), length.out = 146)
+sim_dat = link(m1, data = data.frame(age = age_seq))
+plot_in = data.frame(mu = apply(sim_dat,2,mean), 
+                    pi_l = apply(sim_dat,2,PI,0.95)[1,], 
+                    pi_u = apply(sim_dat,2,PI,0.95)[2,],
+                    age = df$age, weight = df$weight, age_seq = age_seq)
+ggplot(plot_in, aes(x = age, y = weight)) +
+  geom_point(color = "navy", alpha = 0.7) +
+  geom_line(inherit.aes = F, aes(x = age_seq, y = mu), color = "black") +
+  geom_ribbon(inherit.aes = F,  aes(x = age_seq, ymin = pi_l, ymax = pi_u), 
+              color = "lightgrey", alpha = 0.4) +
+  labs(x = "Age", y = "Weight (kg)")
+```
+
+-   okay, this seems to be a reasonable line, although there are clearly a lot
+    of outliers
+-   lets try to do this with brms now
+
+```{r}
+
+```

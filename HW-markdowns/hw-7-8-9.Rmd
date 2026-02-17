@@ -1,0 +1,93 @@
+---
+title: "HW-7-8-9"
+author: "P Winston Miller"
+date: "2026-02-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+set_cmdstan_path("/Users/winston/miniconda3/envs/stan/bin/cmdstan")
+```
+
+# Problem 1
+
+```{r}
+d = sim_happiness(seed = 1992, N_years = 1000, max_age = 75, N_births = 20, aom = 18)
+```
+
+```{r}
+d = d %>% filter(age > 17)
+d$married_std = ifelse(d$married == 0, 1, 2)
+d$age_std = (d$age - 18)/(75-18)
+```
+
+```{r}
+precis(d)
+```
+
+```{r}
+d_in = list(a = d$age_std, m = d$married_std, h = d$happiness)
+```
+
+```{r}
+hw1 = ulam(alist(
+  happy ~ dnorm(mu, sigma),
+  mu <- alpha[m] + bA*a,
+  alpha[m] ~ dnorm(0,1),
+  bA ~ dnorm(0,2),
+  sigma ~ dexp(1)), data = d_in, chains = 4, cores = 4, iter = 1500)
+```
+
+-   okay, this is not great, 55% of the transitions ended in a divergence
+
+```{r}
+traceplot(hw1)
+```
+
+-   yikes, so, it appears that the chains did not agree at all about these beta
+    values for the alpha, lets look at the one with no alpha
+
+```{r}
+precis(hw1)
+```
+
+-   rhat is terrible, terrible!
+-   also, ess_bulk is way too low
+
+```{r}
+d_in2 = list(a = d$age_std, h = d$happiness)
+hw1 = ulam(alist(
+  happy ~ dnorm(mu, sigma),
+  mu <- alpha + bA*a,
+  alpha ~ dnorm(0,1),
+  bA ~ dnorm(0,2),
+  sigma ~ dexp(1)), data = d_in2, chains = 4, cores = 4, iter = 1500)
+```
+
+-   equally terrible
+-   something is not right
+
+```{r}
+precis(hw1)
+```
+
+```{r}
+m6.9 <- quap(
+alist(
+happiness ~ dnorm( mu , sigma ),
+mu <- a[mid] + bA*A,
+a[mid] ~ dnorm( 0 , 1 ),
+bA ~ dnorm( 0 , 2 ),
+sigma ~ dexp(1)
+) , data=d2 )
+precis(m6.9,depth=2)
+```
