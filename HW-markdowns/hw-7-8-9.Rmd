@@ -40,54 +40,182 @@ d_in = list(a = d$age_std, m = d$married_std, h = d$happiness)
 
 ```{r}
 hw1 = ulam(alist(
-  happy ~ dnorm(mu, sigma),
+  h ~ dnorm(mu, sigma),
   mu <- alpha[m] + bA*a,
   alpha[m] ~ dnorm(0,1),
   bA ~ dnorm(0,2),
-  sigma ~ dexp(1)), data = d_in, chains = 4, cores = 4, iter = 1500)
+  sigma ~ dexp(1)), 
+  data = d_in, 
+  chains = 4, cores = 4, iter = 1500, log_lik = T)
 ```
 
--   okay, this is not great, 55% of the transitions ended in a divergence
+-   there were a few warnings about divergences but not bad, lets check the
+    trace plots
 
 ```{r}
 traceplot(hw1)
 ```
 
--   yikes, so, it appears that the chains did not agree at all about these beta
-    values for the alpha, lets look at the one with no alpha
+-   trace plots look okay
 
 ```{r}
-precis(hw1)
+precis(hw1, depth = 2)
 ```
 
--   rhat is terrible, terrible!
--   also, ess_bulk is way too low
+-   rhat looks good
+-   ess_bulk also appears okay
+-   so this model is fairly certain that age decreases happiness
+-   however, married people have a baseline of happiness much higher than
+    non-married people
+    -   therefore, as they age, they don't get quite so unhappy
 
 ```{r}
 d_in2 = list(a = d$age_std, h = d$happiness)
-hw1 = ulam(alist(
-  happy ~ dnorm(mu, sigma),
+hw12 = ulam(alist(
+  h ~ dnorm(mu, sigma),
   mu <- alpha + bA*a,
   alpha ~ dnorm(0,1),
   bA ~ dnorm(0,2),
-  sigma ~ dexp(1)), data = d_in2, chains = 4, cores = 4, iter = 1500)
-```
-
--   equally terrible
--   something is not right
-
-```{r}
-precis(hw1)
+  sigma ~ dexp(1)), 
+  data = d_in2, 
+  chains = 4, cores = 4, iter = 1500, log_lik = T)
 ```
 
 ```{r}
-m6.9 <- quap(
-alist(
-happiness ~ dnorm( mu , sigma ),
-mu <- a[mid] + bA*A,
-a[mid] ~ dnorm( 0 , 1 ),
-bA ~ dnorm( 0 , 2 ),
-sigma ~ dexp(1)
-) , data=d2 )
-precis(m6.9,depth=2)
+precis(hw12)
 ```
+
+-   this model is pretty certain that age has nothing at all to do with
+    happiness
+
+```{r}
+compare(hw1, hw12, func = "WAIC")
+compare(hw1, hw12, func = "PSIS")
+```
+
+-   according to information criteria, the model including marriage is a much
+    better out-of-bag predictor
+-   however, I know from the dag + the simulation that marriage is a collider,
+    and when we condition on a collider, we create a statistical association
+    that is not appropriate
+-   so the association between age and happiness is just a mirage
+
+```{r}
+data(foxes)
+str(foxes)
+```
+
+```{r}
+d = data.frame(
+  group = as.factor(foxes$group),
+  size = scale(foxes$groupsize),
+  area = scale(foxes$area),
+  food = scale(foxes$avgfood),
+  weight = scale(foxes$weight)
+)
+str(d)
+```
+
+```{r}
+hw21 = ulam(alist(
+  weight ~ dnorm(mu, sigma),
+  mu <- alpha[group] + bS*size + bA*area + bF*food,
+  alpha[group] ~ dnorm(0,0.2),
+  c(bS,bA,bF) ~ dnorm(0,0.5),
+  sigma ~ dexp(1)),
+  data = d, 
+  chains = 4, cores = 4, iter = 2000, log_lik = T)
+```
+
+```{r}
+traceplot(hw21, pars = c("bF", "bA", "bS", "sigma"))
+```
+
+```{r}
+precis(hw21)
+```
+
+-   above model is just using all the variables to predict the fox weight
+-   using the dag below, it seems obvious that food is a mediator between area
+    and weight + group size
+-   I think that removing area is appropriate based on this
+-   using the index approach for group number in the alpha accounts for other
+    unobserved factors about each group, potential:
+    -   male/female mix
+    -   kits
+    -   genetic differences
+    -   number of predators
+
+```{r}
+fox_dag = dagitty("dag{
+  area -> food
+  food -> gsize
+  food -> weight
+  gsize -> weight}")
+ggdag(fox_dag) + theme_dag_gray()
+```
+
+```{r}
+hw22 = ulam(alist(
+  weight ~ dnorm(mu, sigma),
+  mu <- alpha[group] + bS*size + bF*food,
+  alpha[group] ~ dnorm(0,0.2),
+  c(bS,bF) ~ dnorm(0,0.5),
+  sigma ~ dexp(1)),
+  data = d, 
+  chains = 4, cores = 4, iter = 2000, log_lik = T)
+```
+
+-   no divergence warnings which is good
+
+```{r}
+traceplot(hw22, pars = c("bF", "bS", "sigma"))
+```
+
+-   traceplots look good
+
+```{r}
+precis(hw22)
+```
+
+-   this doesn't really change the paramaters all that much
+-   rhat value is still good
+-   lets create model without the indexed intercept
+
+```{r}
+hw23 = ulam(alist(
+  weight ~ dnorm(mu, sigma),
+  mu <- alpha + bS*size + bF*food,
+  alpha ~ dnorm(0,0.2),
+  c(bS,bF) ~ dnorm(0,0.5),
+  sigma ~ dexp(1)),
+  data = d, 
+  chains = 4, cores = 4, iter = 2000, log_lik = T)
+```
+
+-   I expect this one to be the least accurate
+
+```{r}
+traceplot(hw23, pars = c("bF", "bS", "sigma"))
+```
+
+```{r}
+precis(hw23)
+```
+
+-   interestingly, removing the indexing did not change the values of bS and bF
+    much
+-   rhat is good, but ess_bulk is lower
+-   lets compare
+
+```{r}
+compare(hw21,hw22,hw23)
+```
+
+-   interstingly, the highest weight is attributed to hw21, however, the
+    standard error of difference is much higher than the actual difference
+    between hw22 and hw21, this is true for all differences
+-   the model weights are also very similar
+-   not to mention the parameter values are similar as well
+-   therefore, it is up to me to choose the best model and based on causal dag,
+    I choose model hw22
