@@ -21,15 +21,17 @@ set_cmdstan_path("/Users/winston/miniconda3/envs/stan/bin/cmdstan")
 # Markov Chain Monte Carlo (MCMC)
 
 -   basically a way to estimate the posterior distribution through sampling
--   various samples, Gibbs and Metropolis-Hastings are what is covered in the
+-   various samplers, Hamiltonian, Gibbs and Metropolis-Hastings are what is covered in the
     book
 -   INLA is another sampling method
 -   Dick claims Hamiltonian Monte Carlo is the best at time of writing, it is
     also what is built into stan which is the underlying package for brms and
     pymc3
 -   INLA uses gaussian random markov fields, which are more limited in model
-    estimation, but are much much faster than MH with a similar accuracy
+    estimation, but are much much faster than MH and hamiltonian with a similar accuracy
     according to my brief research
+- frankly, I do not understand how these work and don't feel that it is necessary to do so
+  as Daniel used to always say, some things just need to be black magic
 
 ### Repeating the ruggedness-log_gdp example but now using the MCMC sampler
 

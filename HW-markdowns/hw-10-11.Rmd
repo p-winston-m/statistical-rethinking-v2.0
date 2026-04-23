@@ -1,0 +1,226 @@
+---
+title: "Homwework Chapters 10 + 11"
+author: "P Winston Miller"
+date: "2026-03-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(dagitty)
+library(patchwork)
+library(ggdag)
+library(paletteer)
+set_cmdstan_path("/Users/winston/miniconda3/envs/stan/bin/cmdstan")
+```
+
+```{r}
+data("NWOGrants")
+d = NWOGrants
+```
+
+```{r}
+str(d);head(d)
+```
+
+```{r}
+dg1 = dagitty("dag{
+  gender -> awards
+  gender -> discipline
+  gender -> applications
+  discipline -> applications
+  discipline -> awards
+  awards -> discipline
+  applications -> awards
+  }")
+ggdag(dg1)
+```
+
+```{r}
+d
+```
+
+# Total Causal Effect
+
+-   probably just gender regressed on application awards
+
+```{r}
+d1_params = alist(
+  awards ~ dbinom(applications,p),
+  logit(p) <- alpha1[gender],
+  alpha1[gender] ~ dnorm(0,1.5))
+d_in = list(applications = d$applications, gender = ifelse(d$gender == "m",1,2), awards = d$awards)
+m1 = ulam(d1_params, data = d_in, log_lik = T, chains = 4, cores = 4)
+```
+
+```{r}
+summ1 = precis(m1, depth = 2, corr = T)
+row.names(summ1) = c("Male","Female")
+summ1$or = exp(summ1$mean)
+summ1
+```
+
+-   odds of applications of being accepted are actually slightly higher for
+    females than males
+-   lets compute contrasts
+
+```{r}
+post1 = extract.samples(m1)
+contrast1 = data.frame(male = inv_logit(post1$alpha1[,1]),
+                       female = inv_logit(post1$alpha1[,2])) |>
+  mutate(contrast = male - female)
+ggplot(data = contrast1, aes(x = contrast)) + 
+  geom_density(color  = "steelblue") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "darkred") +
+  scale_x_continuous(labels = scales::percent, breaks = seq(-1, 1, by = 0.01)) +
+  scale_y_continuous(labels = NULL) +
+  theme_minimal() +
+  labs(x = "Contrast Male-Female \nFunding Rates", y = NULL)
+```
+
+-   so males have a little less than 3% higher probability to be awarded a grant
+
+# Direct Causal Effect
+
+-   now need to estimate direct effect
+-   I could see 2 different approaches
+-   first just fitting two different alphas, 1 for each discipline
+-   this seems like it would give the direct effect of gender while controlling
+    for discipline
+-   and vice versa
+-   second would be to create an interaction for each gender discipline combo
+-   seems like it would give the effect of gender within discipline
+
+Option 1
+
+```{r}
+d11_params = alist(
+  awards ~ dbinom(applications,p),
+  logit(p) <- alpha1[gender] + alpha2[discipline],
+  alpha1[gender] ~ dnorm(0,1.5),
+  alpha2[discipline] ~ dnorm(0,1.5)
+)
+d_in1 = list(discipline = as.integer(d$discipline), applications = d$applications, 
+            gender = ifelse(d$gender == "m",1,2), awards = d$awards)
+m11 = ulam(d11_params, data = d_in1, log_lik = T, chains = 4, cores = 4)
+```
+
+```{r}
+summ11 = precis(m11, depth = 2, corr = T)
+row.names(summ11) = c(unique(d$gender),unique(d$discipline))
+summ11$or = exp(summ11$mean)
+```
+
+Option 2
+
+```{r}
+d_in2 = list(applications = d$applications, 
+             awards = d$awards,
+             # gender = d$gender,
+             # discipline = d$discipline,
+            gender_discipline = as.integer(as.factor(paste0(d$gender, d$discipline))))
+d12_params = alist(
+  awards ~ dbinom(applications,p),
+  logit(p) <- alpha[gender_discipline],
+  alpha[gender_discipline] ~ dnorm(-1,1.5)
+)
+m12 = ulam(d12_params, data = d_in2, log_lik = T, chains = 4, cores = 4)
+```
+
+```{r}
+summ12 = precis(m12, depth = 2, corr = T)
+row.names(summ12) = paste0(d$gender, " - ", d$discipline)
+summ12$or = exp(summ12$mean)
+
+summ11;summ12
+```
+
+-   so rhat for the second model is better
+-   ess_bulk is way better!
+-   second model allows me to compare male-female within discipline
+-   first model allows me to compare male-female overall adjusting for
+    discipline and discipline overall adjusting for male-female
+-   this is probably due to the limited amount of data, and difference between 1
+    and 2 parameters
+-   lets do PSIS
+
+```{r}
+compare(m11,m12, func = "PSIS")
+```
+
+-   m12 has all the weight, but standard error of the difference is very high
+-   since there are 2 pareto K warnings, that means both models have outliers
+
+```{r}
+compare(m11,m12, func = "WAIC")
+```
+
+-   same story here, lets inspect points
+
+```{r}
+paretok = PSIS(m11, pointwise = T)
+row.names(paretok) = (paste0(d$gender," - ",d$discipline))
+paretok |> arrange(desc(k))
+```
+
+-   above 1 is very high, and near 1 is preeetty high I think
+    -   this means these exert undue influence on the value
+-   so it seems that males in physics and interdisciplinary science are unduly
+    influencing model 1
+-   lets look at model 2
+
+```{r}
+paretok = PSIS(m12, pointwise = T)
+row.names(paretok) = (paste0(d$gender," - ",d$discipline))
+paretok |> arrange(desc(k))
+```
+
+-   all of the values are super high due to the limited data I think
+-   lets compute contrasts for this model
+
+```{r}
+post12 = extract.samples(m12)
+contrast12 = data.frame(
+  contrasts = c(
+    inv_logit(post12$alpha[,1]) - inv_logit(post12$alpha[,2]),
+    inv_logit(post12$alpha[,3]) - inv_logit(post12$alpha[,4]),
+    inv_logit(post12$alpha[,5]) - inv_logit(post12$alpha[,6]),
+    inv_logit(post12$alpha[,7]) - inv_logit(post12$alpha[,8]),
+    inv_logit(post12$alpha[,9]) - inv_logit(post12$alpha[,10]),
+    inv_logit(post12$alpha[,11]) - inv_logit(post12$alpha[,12]),
+    inv_logit(post12$alpha[,13]) - inv_logit(post12$alpha[,14]),
+    inv_logit(post12$alpha[,15]) - inv_logit(post12$alpha[,16]),
+    inv_logit(post12$alpha[,17]) - inv_logit(post12$alpha[,18])),
+  sciences = c(rep("Chemical Sciences", 2000),
+               rep("Physical Sciences", 2000),
+               rep("Physics", 2000),
+               rep("Humanities", 2000),
+               rep("Technical Sciences", 2000),
+               rep("Interdisciplinary", 2000),
+               rep("Earth&Life Sciences", 2000),
+               rep("Social Sciences", 2000),
+               rep("Medical Sciences", 2000)))
+
+ggplot(data = contrast12, aes(x = contrasts)) + 
+  geom_density(aes(color = sciences)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "darkred") +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = NULL) +
+  theme_minimal() +
+  theme(angle = 45) +
+  labs(x = "Contrast Probability of\n Male-Female Funding Rates", y = NULL, 
+       color = "Scientific Discipline") +
+  scale_colour_paletteer_d("ggsci::category20_d3",direction = 1)
+  
+```
+
+-   as can be seen, different sciences have different numbers of applications &
+    differences in funding rate for men and women
+-   most obvious is that women are funded at a higher rate then men in earth &
+    life sciences, but men are funded at a higher rate in interdisciplinary
+    sciences

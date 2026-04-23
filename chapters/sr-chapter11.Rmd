@@ -1,0 +1,645 @@
+---
+title: "Chapter 11"
+author: "P Winston Miller"
+date: "2026-04-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+library(paletteer)
+set_cmdstan_path("/Users/winston/miniconda3/envs/stan/bin/cmdstan")
+```
+
+# Logistic Regression
+
+```{r}
+data("chimpanzees")
+d = chimpanzees
+```
+
+```{r}
+d$treatment = 1 + d$prosoc_left + 2*d$condition
+xtabs( ~ treatment + prosoc_left + condition , d )
+```
+
+-   condition 0 = no partner
+-   condition 1 = partner
+-   prosocial left = if prosocial option was on on left
+    -   1 = yes
+    -   2 = no
+-   treatment 1 = prosocial option right, no partner
+-   treatment 2 = prosocial option left, no partner
+-   treatment 3 = prosocial option right, partner
+-   treatment 4 = prosocial option left, partner
+
+Basic Model - just an intercept for treatment - going to build several of these
+with different priors for alpha
+
+```{r}
+m1_in = list(pulled_left = d$pulled_left)
+m1_flat = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha,
+        alpha ~ dnorm(0,10)),
+        data = m1_in, chains = 4, cores = 4)
+
+m1_sharp = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha,
+        alpha ~ dnorm(0,2)),
+        data = m1_in, chains = 4, cores = 4)
+
+m1_sharper1 = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha,
+        alpha ~ dnorm(0,1.5)),
+        data = m1_in, chains = 4, cores = 4)
+
+m1_sharper2 = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha,
+        alpha ~ dnorm(0,1)),
+        data = m1_in, chains = 4, cores = 4)
+
+m1_sharpest1 = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha,
+        alpha ~ dnorm(0,0.5)),
+        data = m1_in, chains = 4, cores = 4)
+m1_sharpest2 = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha,
+        alpha ~ dnorm(0,0.1)),
+        data = m1_in, chains = 4, cores = 4)
+```
+
+```{r}
+prior_flat = extract.prior(m1_flat)
+prior_sharp = extract.prior(m1_sharp)
+prior_sharper1 = extract.prior(m1_sharper1)
+prior_sharper2 = extract.prior(m1_sharper2)
+prior_sharpest1 = extract.prior(m1_sharpest1)
+prior_sharpest2 = extract.prior(m1_sharpest2)
+```
+
+```{r}
+prior_in = data.frame(
+  prior_samples = c(
+    inv_logit(prior_flat$alpha),
+    inv_logit(prior_sharp$alpha),
+    inv_logit(prior_sharper1$alpha),
+    inv_logit(prior_sharper2$alpha),
+    inv_logit(prior_sharpest1$alpha),
+    inv_logit(prior_sharpest2$alpha)),
+  prior_shape = c(
+    rep("flat - N(0,10)",1000),
+    rep("sharp - N(0,2)",1000),
+    rep("sharper - N(0,1.5)",1000),
+    rep("sharper - N(0,1)",1000),
+    rep("sharpest - N(0, 0.5)",1000),
+    rep("sharpest - N(0, 0.1)",1000)))
+
+ggplot(data = prior_in, aes(x = prior_samples, color = prior_shape)) +
+  geom_density()+ 
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = NULL) +
+  theme_minimal() +
+  theme(angle = 45) +
+  labs(x = "Probablity Puleld Left", y = "Probability Density",
+       color =  "Prior Shape") +
+  scale_colour_paletteer_d("ggsci::category20_d3",direction = 1)
+```
+
+-   so here, a traditionally flat prior pulls probability towards 0, 1 so,
+    monkey never pulls left or always pulls left
+-   as the distributions get sharper, they flatten out, N(0,1.5) is about as
+    flat as can be
+-   this holds true until normal prior goes below one, then it starts to really
+    concentrate around 50%
+-   N(0,0.1) makes the model VERY sure that pulls are basically random
+
+Now, lets do the same thing for Beta
+
+Beta Prior Test Model - making the alpha relatively flat because I don't know
+the chimps preference for pulling handles, it might change for any reason
+
+```{r}
+m2_in = list(pulled_left = d$pulled_left, treatment = d$treatment)
+m2_flat = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha + beta[treatment],
+        alpha ~ dnorm(0,1.5),
+        beta[treatment] ~ dnorm(0,10)),
+        data = m2_in, chains = 4, cores = 4)
+
+m2_sharp = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha + beta[treatment],
+        alpha ~ dnorm(0,1.5),
+        beta[treatment] ~ dnorm(0,2)),
+        data = m2_in, chains = 4, cores = 4)
+
+m2_sharper1 = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha + beta[treatment],
+        alpha ~ dnorm(0,1.5),
+        beta[treatment] ~ dnorm(0,1.5)),
+        data = m2_in, chains = 4, cores = 4)
+
+m2_sharper2 = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha + beta[treatment],
+        alpha ~ dnorm(0,1.5),
+        beta[treatment] ~ dnorm(0,1)),
+        data = m2_in, chains = 4, cores = 4)
+
+m2_sharpest1 = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha + beta[treatment],
+        alpha ~ dnorm(0,1.5),
+        beta[treatment] ~ dnorm(0,0.5)),
+        data = m2_in, chains = 4, cores = 4)
+m2_sharpest2 = ulam(
+  alist(pulled_left ~ dbinom(1,p),
+        logit(p) <- alpha + beta[treatment],
+        alpha ~ dnorm(0,1.5),
+        beta[treatment] ~ dnorm(0,0.1)),
+        data = m2_in, chains = 4, cores = 4)
+```
+
+```{r}
+prior_flat = extract.prior(m2_flat)
+prior_sharp = extract.prior(m2_sharp)
+prior_sharper1 = extract.prior(m2_sharper1)
+prior_sharper2 = extract.prior(m2_sharper2)
+prior_sharpest1 = extract.prior(m2_sharpest1)
+prior_sharpest2 = extract.prior(m2_sharpest2)
+```
+
+```{r}
+pflat = sapply(1:4, function(k) inv_logit(prior_flat$alpha + prior_flat$beta[,k]))
+head(pflat)
+```
+
+-   above code produces 4 columns
+-   to get the probability of pulling left, and how sociability affects pulling
+    left
+-   need to add alpha + the beta for each treatment together, then convert to
+    probability by inverting the logit
+-   I just want to look at the difference between the first two treatments,
+    which is no partner, prosocial option on left (t1) prosocial on right (t2)
+-   basically, this is going to tell me the prior difference the model assumes
+    chimps have for just pulling the left lever for no reason
+
+```{r}
+psharp = sapply(1:4, function(k) inv_logit(prior_sharp$alpha + prior_sharp$beta[,k]))
+psharper1 = sapply(1:4, function(k) inv_logit(prior_sharper1$alpha + prior_sharper1$beta[,k]))
+psharper2 = sapply(1:4, function(k) inv_logit(prior_sharper2$alpha + prior_sharper2$beta[,k]))
+psharpest1 = sapply(1:4, function(k) inv_logit(prior_sharpest1$alpha + prior_sharpest1$beta[,k]))
+psharpest2 = sapply(1:4, function(k) inv_logit(prior_sharpest2$alpha + prior_sharpest2$beta[,k]))
+prior_in = data.frame(
+  prior_samples = c(
+    abs(pflat[,1] - pflat[,2]),
+    abs(psharp[,1] - psharp[,2]),
+    abs(psharper1[,1] - psharper1[,2]),
+    abs(psharper2[,1] - psharper2[,2]),
+    abs(psharpest1[,1] - psharpest1[,2]),
+    abs(psharpest2[,1] - psharpest2[,2])),
+  prior_shape = c(
+    rep("flat - N(0,10)",1000),
+    rep("sharp - N(0,2)",1000),
+    rep("sharper - N(0,1.5)",1000),
+    rep("sharper - N(0,1)",1000),
+    rep("sharpest - N(0, 0.5)",1000),
+    rep("sharpest - N(0, 0.1)",1000)))
+```
+
+```{r}
+ggplot(data = prior_in, aes(x = prior_samples, color = prior_shape)) +
+  geom_density()+ 
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = NULL) +
+  theme_minimal() +
+  theme(angle = 45) +
+  labs(x = "Probablity Puleld Left", y = "Probability Density",
+       color =  "Prior Shape") +
+  scale_colour_paletteer_d("ggsci::category20_d3",direction = 1)
+```
+
+-   okay, so once again the sharpest prior basically says the difference between
+    treatments is nothing
+-   lets remove that so I can actually see the diffferences in the others
+
+```{r}
+me1 = round(mean(abs(pflat[,1] - pflat[,2])),3)
+me2 = round(mean(abs(psharp[,1] - psharp[,2])),3)
+me3 = round(mean(abs(psharper1[,1] - psharper1[,2])),3)
+me4 = round(mean(abs(psharper2[,1] - psharper2[,2])),3)
+me5 = round(mean(abs(psharpest1[,1] - psharpest1[,2])),3)
+prior_in = data.frame(
+  prior_samples = c(
+    abs(pflat[,1] - pflat[,2]),
+    abs(psharp[,1] - psharp[,2]),
+    abs(psharper1[,1] - psharper1[,2]),
+    abs(psharper2[,1] - psharper2[,2]),
+    abs(psharpest1[,1] - psharpest1[,2])),
+  prior_shape = c(
+    rep(paste0("flat - N(0,10) - ", me1),1000),
+    rep(paste0("sharp - N(0,2) - ", me2),1000),
+    rep(paste0("sharper - N(0,1.5) - ", me3),1000),
+    rep(paste0("sharper - N(0,1) - ", me4),1000),
+    rep(paste0("sharpest - N(0, 0.5) - ", me5),1000)))
+
+ggplot(data = prior_in, aes(x = prior_samples, color = prior_shape)) +
+  geom_density()+ 
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = NULL) +
+  theme_minimal() +
+  theme(angle = 45) +
+  labs(x = "Probablity Puleld Left", y = "Probability Density",
+       color =  "Prior Shape") +
+  scale_colour_paletteer_d("ggsci::category20_d3",direction = 1)
+```
+
+-   so, similar to alpha, the more "flat" the prior is, the more it concentrates
+    probability to the treatment has no effect (0%) or treatment completely
+    control behavior (100%)
+-   as priors get sharper, probability gets more concentrated towards treatment
+    having no effect, with a degrading likelihood of effect as effect gets
+    stronger
+-   means show the difference in probability for effect of treatment on pulling
+    the left lever
+    -   remember, just looking at the contrast between 2 foods on right or 2
+        foods on left
+    -   outcome is pulling left lever
+-   large differences will shine through, but priors need to be skeptical of
+    those to reduce overfitting
+-   so now that I have decided appropriately skeptical priors, need to build the
+    full model
+
+Full Model - I am including an intercept for each chimpanzee - he doesn't say
+this, but this seems like a typical mixed model for time series - where each
+chimpanzee pulls the lever x number of times and has its own random effect
+
+```{r}
+set.seed(1992)
+m3_in = list(
+  pulled_left = d$pulled_left,
+  treatment = d$treatment,
+  actor = d$actor)
+m3 = ulam(alist(
+  pulled_left ~ dbinom(1,p),
+  logit(p) <- alpha[actor] + beta[treatment],
+  alpha[actor] ~ dnorm(0,1.5),
+  beta[treatment] ~ dnorm(0,0.5)),
+  data = m3_in, chains = 4, cores = 4, log_lik = T)
+```
+
+```{r}
+precis(m3, depth = 2)
+```
+
+-   so each chimp has its own intercept, indicating its own log-odds to pull the
+    left lever
+-   so seems like chimp 2 almost always pulls the left lever, log-odds above 4
+    is basically always 1, log-odds below -4 is basically always 0
+
+First, lets see the probability that any given chimpanzee has a lever preference
+
+```{r}
+post = extract.samples(m3)
+p_left = data.frame(inv_logit(post$alpha)) |>
+  pivot_longer(cols = everything(),
+               names_to = "Chimps",
+               values_to = "Prob Pulled Left") |> as.data.frame()
+  
+ggplot(data = p_left, aes(x = `Prob Pulled Left`, y = Chimps, color = Chimps)) +
+  geom_line(linewidth = 0.8) +
+  stat_summary(fun = mean,
+               geom = "point",
+               shape = 21, size = 3) +
+  scale_x_continuous(labels = scales::percent, breaks = seq(0,1,0.1)) + 
+  theme_minimal() +
+  scale_colour_paletteer_d("ggsci::category20_d3",direction = 1)
+```
+
+-   so clearly most chimps have a mean preference for the right lever
+-   chimps 2 and 7 have a mean preference for the left
+-   in fact, it looks like chimp 2 pretty much never pulled the right lever
+
+Since the model accounts for these differences, I can now look at log-odds for
+the treatments
+
+```{r}
+treatment_affect = data.frame(post$beta) |>
+  rename("R/NP" = "X1",
+         "L/NP" = "X2",
+         "R/P" = "X3",
+         "L/P" = "X4") |>
+  pivot_longer(cols = everything(),
+               names_to = "Treatment",
+               values_to = "LogOdds") |> as.data.frame()
+  
+ggplot(data = treatment_affect, aes(x = LogOdds, y = Treatment, color = Treatment)) +
+  geom_line(linewidth = 0.8) +
+  stat_summary(fun = mean,
+               geom = "point",
+               shape = 21, size = 3) +
+  scale_x_continuous(breaks = seq(-2,2,0.25)) + 
+  theme_minimal() +
+  scale_colour_paletteer_d("ggsci::category20_d3",direction = 1)
+```
+
+-   0 is no effect,
+-   the treatment doesn't seem to have an effect on the chimps
+-   next, would want to look at the contrasts, so how does there being a partner
+    change the pull?
+    -   doesn't appear to be much but need to check
+
+```{r}
+treatment_contrast = data.frame(
+  LogOdds = c(
+    c(post$beta[,1] - post$beta[,3]),
+    c(post$beta[,2] - post$beta[,4])),
+  Hand = c(
+    rep("Right",2000),
+    rep("Left",2000)))
+  
+ggplot(data = treatment_contrast, aes(x = LogOdds, y = Hand, color = Hand)) +
+  geom_line(linewidth = 0.8) +
+  stat_summary(fun = mean,
+               geom = "point",
+               shape = 21, size = 3) +
+  scale_x_continuous(breaks = seq(-2,2,0.25)) + 
+  theme_minimal() +
+  scale_colour_paletteer_d("ggsci::category20_d3",direction = 1)
+```
+
+-   so, I think Dick's interpretation in the book is incorrect, the more
+    negative something is in this contrast, the more pulls happened when partner
+    is present
+-   so, looks like there were slightly more left-handed pulls when partner was
+    present than without since it is slightly more negative
+-   but, there is clearly no effect of partner present/absent having an effect
+
+Now, check the posterior predictions 1. Calculate the probability that each
+chimp pulled lef
+
+```{r}
+pulls_og = unclass(by(d$pulled_left, list(d$actor, d$treatment), mean))
+attr(pulls_og, "call") = NULL
+pulls_og = as.data.frame(pulls_og)
+```
+
+-   columns are treatments
+-   rows are actors
+-   values are proportions of left pulls
+
+```{r}
+sim_post = link(m3, data = list(actor=rep(1:7,each=4) , treatment=rep(1:4,times=7)))
+sim_mu = apply(sim_post,2,mean)
+sim_mu = as.data.frame(matrix(sim_mu, ncol = 4, nrow = 7, byrow = T))
+colnames(sim_mu) = c(1,2,3,4)
+```
+
+```{r}
+sim_mu - pulls_og
+apply(sim_mu - pulls_og,2,mean)
+```
+
+-   on average model is off by less than 2% on its posterior predictions, which
+    is pretty good
+
+# Poisson Regression
+
+-   this doing the whole oceanic islands tool thing
+-   basically, there is an unknown maximum of tools, and number of tools is a
+    discrete count
+-   much like in logistic regression, the transformation has a big effect on the
+    priors
+-   transformation is log, so if prior is normal, it is then changed to
+    log-normal for outcome
+
+Simulate Typical Priors
+
+```{r}
+curve( dlnorm( x , 0 , 10 ) , from=0 , to=100 , n=200, col = "black")
+curve( dlnorm( x , 3 , 0.5 ) , from=0 , to=100 , n=200, add = T, col = "red")
+curve( dlnorm( x , 3 , 1 ) , from=0 , to=100 , n=200, add = T, col = "blue")
+curve( dlnorm( x , 10 , 20 ) , from=0 , to=100 , n=200, add = T, col = "green")
+```
+
+-   so, need to do run this especially for log-normal outcomes
+
+```{r}
+set.seed(10)
+n = 100
+alpha =  rnorm(n, 3, 0.5 )
+beta = rnorm(n, 0, 10 ) # 1
+plot(NULL, xlim=c(-2,2), ylim=c(0,100) )
+for (i in 1:n){
+  curve(exp(alpha[i] + beta[i]*x) , add=TRUE , col=grau() )}
+
+beta = rnorm(n, 0, 5 ) # 2
+plot(NULL, xlim=c(-2,2), ylim=c(0,100) )
+for (i in 1:n){
+  curve(exp(alpha[i] + beta[i]*x) , add=TRUE , col=grau() )}
+
+beta = rnorm(n, 0, 2 ) # 3
+plot(NULL, xlim=c(-2,2), ylim=c(0,100) )
+for (i in 1:n){
+  curve(exp(alpha[i] + beta[i]*x) , add=TRUE , col=grau() )}
+
+beta = rnorm(n, 0, 1 ) # 4
+plot(NULL, xlim=c(-2,2), ylim=c(0,100) )
+for (i in 1:n){
+  curve(exp(alpha[i] + beta[i]*x) , add=TRUE , col=grau() )}
+
+beta = rnorm(n, 0, 0.5 )
+plot(NULL, xlim=c(-2,2), ylim=c(0,100) )
+for (i in 1:n){
+  curve(exp(alpha[i] + beta[i]*x) , add=TRUE , col=grau() )}
+
+beta = rnorm(n, 0, 0.25 )
+plot(NULL, xlim=c(-2,2), ylim=c(0,100) )
+for (i in 1:n){
+  curve(exp(alpha[i] + beta[i]*x) , add=TRUE , col=grau() )}
+
+beta = rnorm(n, 0, 0.1 )
+plot(NULL, xlim=c(-2,2), ylim=c(0,100) )
+for (i in 1:n){
+  curve(exp(alpha[i] + beta[i]*x) , add=TRUE , col=grau() )}
+```
+
+this is assuming standardization
+
+-   note that all the lines still go through 0, which is what I want since this
+    is standardized
+
+1.  Beta 1: means that the model says the number of tools collapses once the
+    population decreases from mean value, and explodes once population exceeds
+    mean value
+    -   or vice versa.
+    -   this makes no sense, and so is bad prior
+2.  Beta 2: similar, but not as extreme due to not as many negative values
+    -   I think it would be possible to force this to be positive, but, probably
+        not necessary
+
+<!-- -->
+
+3.  Beta 3: So as the standard deviation gets smaller, the swings get less
+    extreme
+
+4.  Beta 5: These lines are almost completely flat, model assumes no effect of
+    populationn size at all
+
+    -   this is also not good, I am pretty sure population size matters
+
+5.  Beta 4: These lines still seem to have too much swing
+
+6.  Beta 5: This seems like the best, the model assumes only large differences
+    in standard log population are going to affect the number of tools which
+    seems right
+
+Now to Graph on the real values
+
+```{r}
+set.seed(10)
+n = 100
+alpha =  rnorm(n, 3, 0.5 )
+beta = rnorm(n, 0, 0.25 )
+x_seq = seq(from=log(100) , to=log(200000) , length.out=100 )
+lambda = sapply( x_seq , function(x) exp( alpha + beta*x))
+plot( NULL , xlim=range(x_seq) , ylim=c(0,500) , xlab="log population" ,
+ylab="total tools" )
+for ( i in 1:n ){lines(x_seq, lambda[i,], col=grau(), lwd=1.5)}
+
+plot( NULL , xlim=range(exp(x_seq)) , ylim=c(0,500), xlab="population",
+ylab="total tools" )
+for ( i in 1:n ) lines( exp(x_seq) , lambda[i,] , col=grau() , lwd=1.5 )
+```
+
+```{r}
+data("Kline")
+d_in = list(tools = Kline$total_tools,
+            log_pop_std = scale(log(Kline$population)),
+            contact = ifelse(Kline$contact == "low",1,2))
+```
+
+```{r}
+m41 = ulam(alist(
+  tools ~ dpois(lambda),
+  log(lambda) <- alpha,
+  alpha ~ dnorm(3,0.5)),
+  data = d_in, chains = 4, cores = 4, log_lik = T)
+
+m42 = ulam(alist(
+  tools ~ dpois(lambda),
+  log(lambda) <- alpha[contact] + beta[contact]*log_pop_std,
+  alpha[contact] ~ dnorm(3,0.5),
+  beta[contact] ~ dnorm(0,0.25)),
+  data = d_in, chains = 4, cores = 4, log_lik = T)
+```
+
+```{r}
+precis(m41, depth = 2);precis(m42, depth = 2);compare(m41,m42,func="PSIS")
+```
+
+-   highly influential points (expected due to small sample size)
+-   m42 is clearly better for a lot of reasons
+-   lets see what those points are
+
+```{r}
+k = PSIS(m42, pointwise = T)
+row.names(k) = Kline$culture
+k[order(k$k, decreasing = T),]
+```
+
+-   so,Tonga, Hawaii, and Trobriand are all highly influential
+
+```{r}
+Kline$log_pop_std = (log(Kline$population) - mean(log(Kline$population)))/sd(log(Kline$population))
+Kline
+```
+
+-   reason why Hawaii is influential is obvious, very high population, very high
+    tools, but low contact, which is very different than the others
+-   Tonga is a much higher population than everybody else as well
+-   Yap has a very low population, but a lot of tools
+-   Trobrians has the opposite problem, relatvely high pop, high contact and
+    like no tools
+-   okay, now need to calculate posterior predictions and plot them over the
+    data points to see how that influences the model
+
+```{r}
+set.seed(2022)
+fake_n = 1000
+log_pop_std = seq(from = -1.5, to = 3, length.out = fake_n)
+fake_low = data.frame(log_pop_std = log_pop_std, contact = 1)
+fake_high = data.frame(log_pop_std = log_pop_std, contact = 2)
+sim_low = link(m42, data = fake_low)
+sim_high = link(m42, data = fake_high)
+mu_low = apply(sim_low, 2, mean)
+ci_low = apply(sim_low, 2, PI, 0.95)
+mu_high = apply(sim_high, 2, mean)
+ci_high = apply(sim_high, 2, PI, 0.95)
+```
+
+```{r}
+p_in = data.frame(
+    log_pop_std = log_pop_std,
+    mu_low = mu_low,
+    ci_low_l = ci_low[1,],
+    ci_low_u = ci_low[2,],
+    mu_high = mu_high,
+    ci_high_l = ci_high[1,],
+    ci_high_u = ci_high[2,]) |>
+  mutate(
+    log_pop = log_pop_std*1.53 + 9,
+    pop = exp(log_pop))
+```
+
+```{r}
+ggplot(data = p_in, aes(x = log_pop_std, y = mu_high)) +
+  geom_line(color = "steelblue") +
+  geom_ribbon(inherit.aes = F, color = "steelblue", fill = "steelblue", alpha = 0.1,
+    aes(x = log_pop_std, ymin = ci_high_l, ymax = ci_high_u)) +
+  geom_line(aes(y = mu_low), color = "darkgreen", linetype = "dashed") + 
+  geom_ribbon(inherit.aes = F, color = "darkgreen", fill = "darkgreen", alpha = 0.1,
+    aes(x = log_pop_std, ymin = ci_low_l, ymax = ci_low_u)) +
+  geom_point(inherit.aes = F, color = "darkred", shape = 21, data = Kline,
+             aes(x = log_pop_std, y = total_tools, fill = contact)) +
+  scale_fill_manual(values = c("high" = "darkred", "low" = NULL)) +
+  geom_text(inherit.aes = F,
+            data = Kline, aes(x = log_pop_std, y = total_tools+10, label = culture)) +
+  theme_minimal() + 
+  labs(x = "STD Log Population", y = "Tool Count", title = "Standardized Log Population", fill = NULL)
+```
+
+-   so basically Hawaii is pretty much controlling the direction of the
+    low-contact\*population line
+-   and the model is not fitting Tonga well
+
+```{r}
+ggplot(data = p_in, aes(x = pop, y = mu_high)) +
+  geom_line(color = "steelblue") +
+  geom_ribbon(inherit.aes = F, color = "steelblue", fill = "steelblue", alpha = 0.1,
+    aes(x = pop, ymin = ci_high_l, ymax = ci_high_u)) +
+  geom_line(aes(y = mu_low), color = "darkgreen", linetype = "dashed") + 
+  geom_ribbon(inherit.aes = F, color = "darkgreen", fill = "darkgreen", alpha = 0.1,
+    aes(x = pop, ymin = ci_low_l, ymax = ci_low_u)) +
+  geom_point(inherit.aes = F, data = Kline, shape = 21, color = "darkred",
+             aes(x = population, y = total_tools, fill = contact)) +
+  scale_fill_manual(values = c("high" = "darkred", "low" = NA)) +
+  theme_minimal() + 
+  labs(x = "Log Population", y = "Tool Count", title = "Standardized Log Population")
+```
