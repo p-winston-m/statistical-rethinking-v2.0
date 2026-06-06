@@ -1,0 +1,86 @@
+---
+title: "HW Chapters 11 & 12"
+author: "P Winston Miller"
+date: "2026-05-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(gtools)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+library(paletteer)
+set_cmdstan_path("/Users/winston/miniconda3/envs/stan/bin/cmdstan")
+```
+
+```{r}
+data("reedfrogs")
+d = reedfrogs
+```
+
+# Problem 1
+
+-   simulating priors
+-   trying to simulate tank survival probability, the survival being the alpha-j
+    parameter
+-   this is dependent on alpha_bar and sigma
+
+```{r}
+n = 1e4
+alpha_bar = rnorm(n,0,1)
+sigma = rexp(n,0.5)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+sigma = rexp(n,1)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+sigma = rexp(n,3)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+sigma = dexp(n,5)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+sigma = dexp(n,10)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+```
+
+-   decreasing sigma below 1 concentrates probability near the extremes of the
+    distribution
+-   sigma at 1 basically spreads it out more or less evenly
+-   increasing sigma decreases probability concentration at the edges and moves
+    it to the center
+
+```{r}
+n = 1e4
+sigma = rexp(n,1)
+alpha_bar = rnorm(n,0.001,1)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+alpha_bar = rnorm(n,0.5,1)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+alpha_bar = rnorm(n,0.1,1)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+alpha_bar = rnorm(n,1,1)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+alpha_bar = rnorm(n,3,1)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+alpha_bar = rnorm(n,5,1)
+dens(inv_logit(rnorm(n,alpha_bar,sigma)),xlim=c(0,1),adj=0.1,lwd=4,col=2)
+
+```
+
+-   so the smaller it goes, it seems to more evenly spread probability
+-   the higher the mean in alpha, the higher probability moves towards 1
+
+# Problem 2

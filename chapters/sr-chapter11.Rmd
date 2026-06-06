@@ -493,19 +493,12 @@ this is assuming standardization
 2.  Beta 2: similar, but not as extreme due to not as many negative values
     -   I think it would be possible to force this to be positive, but, probably
         not necessary
-
-<!-- -->
-
 3.  Beta 3: So as the standard deviation gets smaller, the swings get less
     extreme
-
 4.  Beta 5: These lines are almost completely flat, model assumes no effect of
     populationn size at all
-
     -   this is also not good, I am pretty sure population size matters
-
 5.  Beta 4: These lines still seem to have too much swing
-
 6.  Beta 5: This seems like the best, the model assumes only large differences
     in standard log population are going to affect the number of tools which
     seems right
@@ -643,3 +636,159 @@ ggplot(data = p_in, aes(x = pop, y = mu_high)) +
   theme_minimal() + 
   labs(x = "Log Population", y = "Tool Count", title = "Standardized Log Population")
 ```
+
+-   tbh, this is not a great model
+-   but, that is okay
+
+# Poisson Regression as a Rate
+
+-   the lambda in the poisson regression can also be viewed as a rate which is
+    fairly commin
+-   lambda = mean mu / unit of time or distance
+-   allows for the creation of a model where exposure (or counts) across units
+    of time vary
+
+Lets simulate some monks copying data
+
+```{r}
+days = 60
+y_old = rpois(n = days, lambda = 1.5)
+y_old
+```
+
+-   so here I have simulated output of number of manuscripts generated per day
+    according to poisson distribution with
+
+    mean & variance = 1.5 (hence, highest number is 3)
+
+-   this is over 60 days
+
+So, I want to compare how productive a new monastary is to my old monastary
+
+-   but the don't track days, only weeks
+
+```{r}
+weeks = 8
+y_new = rpois(weeks, 0.5*7)
+y_new
+```
+
+-   so I am simulating the daily rate (bad) and then multiplying it by 7 to get
+    the weekly rate
+
+```{r}
+y_all = c(y_old, y_new)
+time = c(rep(1,60), rep(7,8))
+```
+
+-   now time to create the data for modelling
+    -   so monastery is the monastery indicator
+    -   y_all is the number of manuscripts outputted
+    -   time is the exposure variable
+        -   so, I set it in days since that is the smallest exposure variable
+        -   so the weekly outputs have an exposure of 7, and the daily outputs
+            have an exposure of 1
+
+```{r, message=F}
+monastery = c(rep(0,60), rep(1,8))
+d = list(y = y_all, log_time = log(time), monastery = monastery)
+m51 = ulam(alist(
+  y ~ dpois(lambda),
+  log(lambda) <- log_time + alpha + beta*monastery,
+  alpha ~ dnorm(0,1),
+  beta ~ dnorm(0,1)),
+  data = d, chains = 4, cores = 4, log_lik = T)
+```
+
+```{r}
+precis(m51)
+post = extract.samples(m51)
+lambda_old = exp(post$alpha)
+lambda_new = exp(post$alpha + post$beta)
+precis(data.frame(lambda_old, lambda_new))
+```
+
+-   I am curious, I wonder if I just did an index alpha if it would give the
+    same result, it should
+-   so index needs to start at 1, so gotta change that, having it be 0 in the
+    beta above just removed beta for new monastery
+
+```{r}
+monastery = c(rep(1,60), rep(2,8))
+d = list(y = y_all, log_time = log(time), monastery = monastery)
+m52 = ulam(alist(
+  y ~ dpois(lambda),
+  log(lambda) <- log_time + alpha[monastery],
+  alpha[monastery] ~ dnorm(0,1)),
+  data = d, chains = 4, cores = 4, log_lik = T)
+```
+
+-   so it works
+
+```{r}
+post = extract.samples(m52)
+precis(m52, depth = 2)
+precis(data.frame(alpha1 = exp(post$alpha[,1]),
+                  alpha2 = exp(post$alpha[,2])))
+```
+
+-   interesting, so doing it this way was very very similar and not as
+    complicated, as expected
+-   the rhat is the same and ess is slightly higher in 52
+
+# Multinomial Regression
+
+-   For when there are more than 2 outcomes
+-   he has a softmax function for this - this is the multinomial version of the
+    logit
+-   there is also a way to model multinomial outcomes as a mixture of poisson
+    models but he doesn't spend a lot of time explaining this
+
+Simulating how income affects career choice
+
+-   there are 3 careers
+-   each has a different income
+
+```{r}
+n = 500
+income = c(1,2,5)
+```
+
+Compute a score for each career and then convert to probability of choice based
+on income
+
+```{r}
+set.seed(1992)
+score = 0.5*income
+p = softmax(score[1],score[2],score[3])
+score
+p
+```
+
+Now simulate career choice for each n
+
+```{r}
+set.seed(1992)
+career = rep(0, length = n)
+for(i in 1:n){career[i] = sample(1:3, size = 1, prob = p)}
+table(career)/500;table(career)
+
+d = data.frame(career) |>
+  mutate(income = ifelse(career == 1, 1,2),
+         income = ifelse(career == 3, 5, career))
+```
+
+Now create model
+
+-   he does this in straight stan, but I don't care about that, I tried to
+    recreate it in rethinking, but I couldn't recreate in rethinking and was
+    unable to recreate in AZ
+-   going to leave this particular approach alone for now
+-   multi-nomial problems are kind of unusual in my current research and
+    typically one can use the multi-factor as a treatment to predict outcome
+    instead to approach the same kind of understanding
+-   On the other hand, it seems like these are really powerful in bayesian
+    approaches due to the ability to essentially create different linear models
+    for each outcome
+-   need to learn how to do this in BRMS or figure out how to do it in
+    rethinking

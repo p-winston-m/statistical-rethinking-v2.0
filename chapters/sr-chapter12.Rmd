@@ -1,0 +1,631 @@
+---
+title: "Chapter 12"
+author: "P Winston Miller"
+date: "2026-05-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rethinking)
+library(gtools)
+library(dagitty)
+library(ggdag)
+library(patchwork)
+library(paletteer)
+set_cmdstan_path("/Users/winston/miniconda3/envs/stan/bin/cmdstan")
+```
+
+# Beta Simulation
+
+-   this uses the beta distribution as the outcome variable
+    -   has 2 parameters, pbar and theta
+    -   pbar is the central tendency, so the average probability for each count
+    -   theta is a shape, helping control the width of the distribution
+
+```{r}
+curve( dbeta2(x,0.5,0) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.5,2) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.5,2.5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.5,5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.5,7.5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.5,10) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.5,50) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+```
+
+-   so it seems like the higher that theta is, the more peaked the distribution
+    around pbar and the thinner the tails
+-   0 shows that there are no sampled probabilities at any space
+-   at theta = 2, the distribution is basically uniform where all probabilities
+    are equally likely
+-   greater than 2 is starts to take on that bell curve shape
+
+```{r}
+curve( dbeta2(x,0,5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.1,5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.25,5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.5,5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,0.75,5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+curve( dbeta2(x,1,5) , from=0 , to=1 ,
+xlab="probability" , ylab="Density" )
+```
+
+-   pbar is a probability, so bound between 0 and 1
+-   seems that setting this to 0 or 1 means that there are no samples
+    probabilities
+-   okay, so changing pbar just changes the location of the peak/tail since it
+    is bounded between 0 and 1
+-   so the higher/lower it is, the longer the tail and the more dense the
+    probability is at any given theta (shape)
+
+# Beta-Binomial Model
+
+-   uses the beta distribution as the outcome
+-   so, each binomial count is considered to have its own probability
+-   I bet feeding this kind of model aggregated data and row-wise data would
+    have a very different effect
+-   linear model is bound to pbar so changes in coefficients affect change of
+    average probability
+
+```{r}
+data("UCBadmit")
+d = UCBadmit
+d
+```
+
+```{r}
+d_in = list(admit = d$admit, 
+               applications = d$applications, 
+               gender = ifelse(d$applicant.gender == "male",1,2))
+params = alist(
+  admit ~ dbetabinom(size = applications, prob = pbar, theta = theta),
+  logit(pbar) <- alpha[gender],
+  alpha[gender] ~ dnorm(0,0.5),
+  transpars> theta <<- phi + 2.0,
+  phi ~ dexp(1))
+m1 = ulam(params, data = d_in, chains = 4, cores = 4, log_lik = T)
+```
+
+-   tagging theta with "transpars\> theta \<" tells stan to return theta as a
+    parameter, as opposed to returning phi
+-   I feel like we could just add 2 to phi, but this may be important for more
+    complicated situations
+
+```{r}
+post = extract.samples(m1)
+post$diff_alpha = inv_logit(post$alpha[,1]) - inv_logit(post$alpha[,2])
+precis(post, depth = 2)
+```
+
+-   so remember we are looking at log-odds for alpha
+-   there are 12 pbars because there are 12 rows of data - each a combination of
+    department and gender
+-   and then I transformed diff alpha to look at the difference in probability
+    between men and women
+-   so there is basically no difference between male and female admissions,
+    which is what we found when accounting for department in the last model,
+    when not accounting for department, there was a difference!
+
+```{r}
+postcheck(m1)
+```
+
+-   so, still not a god model, however, the model does clearly pick up on
+    heterogenaity across rows and that can be seen here
+    -   the rows remember are department-gender combinations
+    -   6 departments, 2 genders = 12 rows
+-   empty circles are predictions, bars are 89% HPDI, and blue dots are actuals
+-   So, there are clearly 8 of 12 rows where it completely misses actuals
+-   I can see why he used this, but, this is not a good model
+-   lets look at the posterior probaility lines for each gender
+
+```{r}
+gid = 2
+# draw posterior mean beta distribution
+curve( dbeta2(x,mean(logistic(post$a[,gid])),mean(post$theta)) , from=0 , to=1 ,
+ylab="Density" , xlab="probability admit", ylim=c(0,3) , lwd=2 )
+# draw 50 beta distributions sampled from posterior
+for ( i in 1:50 ) {
+p <- logistic( post$a[i,gid] )
+theta <- post$theta[i]
+curve( dbeta2(x,p,theta) , add=TRUE , col=col.alpha("black",0.2) )
+}
+mtext( "distribution of female admission rates" )
+
+gid = 1
+# draw posterior mean beta distribution
+curve( dbeta2(x,mean(logistic(post$a[,gid])),mean(post$theta)) , from=0 , to=1 ,
+ylab="Density" , xlab="probability admit", ylim=c(0,3) , lwd=2 )
+# draw 50 beta distributions sampled from posterior
+for ( i in 1:50 ) {
+p <- logistic( post$a[i,gid] )
+theta <- post$theta[i]
+curve( dbeta2(x,p,theta) , add=TRUE , col=col.alpha("black",0.2) )
+}
+mtext( "distribution of male admission rates" )
+```
+
+-   so the thick black line is the curve corresponding to the posterior mean
+-   the others are the 50 most samples combinations of pbar and theta
+
+# Negative Binomial
+
+-   also called gamma-poisson
+-   similar in concept to beta-binomial, where each poisson count has its own
+    rate parameter = lambda/unit of time or distance or whatever
+-   so this uses a gamma distribution to estimate the shape of the distribution
+    of poisson rates across all cases
+-   the lambda parameter is basically the same as a poisson parameter (including
+    offset I think)
+-   Lets try to the oceanic tools example and see how it works here
+
+```{r}
+data(Kline)
+d = Kline
+d
+```
+
+-   so, only 10 points, very very small
+
+```{r}
+d$log_pop_std = scale(log(d$population))
+d_in = list(pop = d$log_pop_std,
+            contact = ifelse(d$contact == "low",1,2),
+            tools = d$total_tools)
+m2 = ulam(alist(
+  tools ~ dgampois(mu = lambda, scale = phi),
+  log(lambda) <- alpha[contact] + beta[contact]*pop,
+  alpha[contact] ~ dnorm(3,0.5),
+  beta[contact] ~ dnorm(0,0.5),
+  phi <- omega + 2,
+  omega ~ dexp(1)),
+  data = d_in, chains = 4, cores = 4, log_lik = T)
+```
+
+```{r}
+post = extract.samples(m2)
+post$diff_beta_pop = exp(post$beta[,2]) - exp(post$beta[,1])
+post$diff_alpha_pop = exp(post$alpha[,2]) - exp(post$alpha[,1])
+psis= PSIS(m2, pointwise = T)
+psis$culture = d$culture
+```
+
+-   so here, note that though there are high K pareto values, they are not as
+    high as in the other model (\>1) but still high
+
+```{r}
+psis;precis(post)
+```
+
+-   now only 3 higher than 0.5 tonga and hawaii (HI low contact, large pop, many
+    tools) & (tonga high pop low contact, low tools); yap was also an outlier in
+    the previous model
+-   It seems that in general, high contact civilizations have more tools,
+    irrespective of population size, shown by the huge difference in alphas
+-   however, it is now obvious that there is very little real difference between
+    high and low contact when considering population size, there is a chance
+    that higher contact societies may have slightly less tools than lower
+    contact ones when controlling for population but this may be caused by the
+    Hawaii outlier, huge pop, no contact, relatively high number of tools
+
+Lets show the estimates on the scale of the data now
+
+```{r}
+set.seed(2022)
+Kline$log_pop_std = (log(Kline$population) - mean(log(Kline$population)))/sd(log(Kline$population))
+fake_n = 1000
+log_pop_std = seq(from = -1.5, to = 3, length.out = fake_n)
+fake_low = data.frame(pop = log_pop_std, contact = 1)
+fake_high = data.frame(pop = log_pop_std, contact = 2)
+sim_low = link(m2, data = fake_low)
+sim_high = link(m2, data = fake_high)
+mu_low = apply(sim_low$lambda, 2, mean)
+ci_low = apply(sim_low$lambda, 2, PI, 0.95)
+mu_high = apply(sim_high$lambda, 2, mean)
+ci_high = apply(sim_high$lambda, 2, PI, 0.95)
+
+p_in = data.frame(
+    log_pop_std = log_pop_std,
+    mu_low = mu_low,
+    ci_low_l = ci_low[1,],
+    ci_low_u = ci_low[2,],
+    mu_high = mu_high,
+    ci_high_l = ci_high[1,],
+    ci_high_u = ci_high[2,]) |>
+  mutate(
+    log_pop = log_pop_std*1.53 + 9,
+    pop = exp(log_pop))
+```
+
+```{r}
+ggplot(data = p_in, aes(x = log_pop_std, y = mu_high)) +
+  geom_line(color = "steelblue", alpha = 1.5) +
+  geom_ribbon(inherit.aes = F, color = "steelblue", fill = "steelblue", alpha = 0.1,
+    aes(x = log_pop_std, ymin = ci_high_l, ymax = ci_high_u)) +
+  geom_line(aes(y = mu_low), color = "darkgreen", linetype = "dashed", alpha = 1.5) + 
+  geom_ribbon(inherit.aes = F, color = "darkgreen", fill = "darkgreen", alpha = 0.1,
+    aes(x = log_pop_std, ymin = ci_low_l, ymax = ci_low_u)) +
+  geom_point(inherit.aes = F, color = "darkred", shape = 21, data = Kline,
+             aes(x = log_pop_std, y = total_tools, fill = contact)) +
+  scale_fill_manual(values = c("high" = "darkred", "low" = NULL)) +
+  geom_text(inherit.aes = F,
+            data = Kline, aes(x = log_pop_std, y = total_tools+10, label = culture)) +
+  theme_minimal() + 
+  labs(x = "STD Log Population", y = "Tool Count", title = "Standardized Log Population", fill = NULL)
+
+ggplot(data = p_in, aes(x = pop, y = mu_high)) +
+  geom_line(color = "steelblue") +
+  geom_ribbon(inherit.aes = F, color = "steelblue", fill = "steelblue", alpha = 0.1,
+    aes(x = pop, ymin = ci_high_l, ymax = ci_high_u)) +
+  geom_line(aes(y = mu_low), color = "darkgreen", linetype = "dashed") + 
+  geom_ribbon(inherit.aes = F, color = "darkgreen", fill = "darkgreen", alpha = 0.1,
+    aes(x = pop, ymin = ci_low_l, ymax = ci_low_u)) +
+  geom_point(inherit.aes = F, data = Kline, shape = 21, color = "darkred",
+             aes(x = population, y = total_tools, fill = contact)) +
+  scale_fill_manual(values = c("high" = "darkred", "low" = NA)) +
+  theme_minimal() + 
+  coord_cartesian(xlim = c(0,3e5)) +
+  labs(x = "Population", y = "Tool Count", title = "Population")
+```
+
+-   so, really, not a lot of difference in population that relates to tool count
+-   seems like contact may be what matters, lets test that using PSIS and WAIC
+
+```{r}
+d_in = list(contact = ifelse(d$contact == "low",1,2),
+            tools = d$total_tools)
+m21 = ulam(alist(
+  tools ~ dgampois(mu = lambda, scale = phi),
+  log(lambda) <- alpha[contact],
+  alpha[contact] ~ dnorm(3,0.5),
+  phi <- omega + 2,
+  omega ~ dexp(1)),
+  data = d_in, chains = 4, cores = 4, log_lik = T)
+```
+
+```{r}
+compare(m2,m21, func = PSIS)
+compare(m2,m21, func = WAIC)
+```
+
+-   according to information criterion while the model containing population has
+    more weight, it seems that the standard error of the difference is barely
+    within the true difference, so the population model slightly edges this
+    other one out
+
+# Zero-Inflated Poisson
+
+-   back to the monks example
+-   lets simulate some data
+
+```{r}
+set.seed(365)
+prob_drink = 0.2 # drinks 20% of the time
+rate_work = 1 # produces an average of 1 manuscript per day
+n = 365 # 1 year of production
+drink = rbinom(n, 1, prob_drink)
+y = (1-drink)*rpois(n, rate_work)
+simplehist(y);simplehist(drink)
+```
+
+-   so, some of the 0 lines come from drinking, others come from not completing
+    a manuscript naturally
+-   now lets create the zero-inflated poisson model
+
+```{r}
+curve(dnorm(x,0,1))
+curve(dnorm(log(x),-2,1))
+```
+
+```{r}
+m3 = ulam(alist(
+  y ~ dzipois(p, lambda),
+  logit(p) <- alpha_p,
+  log(lambda) <- alpha_lambda,
+  alpha_p ~ dnorm(-1.5,1), # nudged to move prob mass below 0.5
+  alpha_lambda ~ dnorm(1,0.5)
+), data = list(y = y), chains = 4, cores = 4, log_lik = T)
+precis(m3)
+```
+
+```{r}
+post = extract.samples(m3)
+post$nat_alpha_p = inv_logit(post$alpha_p)
+post$nat_alpha_lambda = exp(post$alpha_lambda)
+precis(post)
+```
+
+-   so one thing to note is that p and lambda are untransformed in the output
+-   know this because they are equal to alpha lambda and alpha p
+-   depending on seed it is easier for me to recover parameters
+
+# Ordinal Categorical Outcomes
+
+-   ordered categories
+-   uses a trolley problem data set, I hate trolley problems
+
+```{r}
+data("Trolley")
+d = Trolley
+str(d)
+```
+
+```{r}
+simplehist(d$response, xlab = "Response")
+```
+
+-   response is how appropriate the participant thinks that action is
+    -   so it seems like most people didn't think it was appropriate or
+        inappropriate
+
+Now to calculate proportionality and log odds
+
+```{r}
+prop_k = table(d$response)/nrow(d)
+cum_prop_k = cumsum(prop_k)
+plot( 1:7 , cum_prop_k , type="b" , xlab="response" ,
+ylab="cumulative proportion" , ylim=c(0,1) )
+```
+
+-   above is the cumulative proportion of proportion k, below is logit
+
+```{r}
+logit_fun = function(x){log(x/(1-x))} # same as built in logit() function
+log_cum_prop_k = logit_fun(cum_prop_k)
+log_cum_prop_k
+plot( 1:7 , log_cum_prop_k , type="b" , xlab="response" ,
+ylab="cumulative proportion" , ylim=c(-2,2) )
+```
+
+-   so the max odds is infinity or NaN
+
+Now lets build a model where I am going to get the model to estimate the above
+cumulative-log-odds for each ordinal category
+
+```{r}
+m4 = ulam(alist(
+    y ~ dordlogit(0, cutpoints), # 0 is where the linear model phi would normally go
+    cutpoints ~ dnorm(0,1.5)), 
+    data = list(y = d$response), chains = 4, cores = 4)
+```
+
+-   he uses the term cutpoints, I would prefer alpahs, but thats what he uses
+-   also this is causing a lot of errros, but, I guess we can just ignore them
+    -   seems like it took a while to identify the correct parameters, maybe
+        didn't do a good job specifying that prior
+-   and this takes significantly longer than any model run so far
+
+```{r}
+post = extract.samples(m4)
+precis(post, depth = 2);log_cum_prop_k
+p_in = data.frame(y = c(log_cum_prop_k, c(apply(post$cutpoints,2,mean),NaN)),
+                  x = rep(1:7,2),
+                  type = c(rep("proportion",7),rep("estimated",7)) )
+ggplot(data = p_in, aes(x = x, y = y, color = type)) + geom_point(alpha = 0.5)
+```
+
+-   samples worked great though
+-   as you can see, the estimated alpha is almost exactly what was calculated
+-   so close that the points are indistinguishable on the graph
+
+```{r}
+round(inv_logit(coef(m4)), 3); cum_prop_k
+```
+
+-   these are almost exactly the cumulative probabilities
+-   now lets look at the outcome probability
+
+```{r}
+pk1 = round(dordlogit(1:7,0,coef(m4)),2)
+pk1
+```
+
+-   so these are the base outcome probabilities of each level of response or y
+-   when you subtract 0.5 from them, the probabilities on the higher scales get
+    larger while the probabilities on the lower end of response get smaller
+
+```{r}
+pk2 = round(dordlogit(1:7,0,coef(m4)-1),2)
+pk2
+```
+
+```{r}
+pk1 - pk2
+```
+
+-   so the lowest level probability decreased by 0.08 while the highest
+    increased by 0.17
+
+```{r}
+sum(pk1*(1:7))
+```
+
+-   this implies that the average response is between 4 or 5 but more 4
+    responses
+
+```{r}
+sum(pk2*(1:7))
+```
+
+-   subtracting 1 makes the average response between 5 or 6, huge change towards
+    the top end of the scale
+-   and if the beta was negative, for instance(-1) then subtracting beta would
+    shift it towards smaller probabilites
+
+```{r}
+pk3 = round(dordlogit(1:7,0,coef(m4)-(-1)),2)
+pk3;pk1-pk3;sum(pk3*(1:7))
+```
+
+-   so now the response grew a lot in the lower ends of the scale and decreased
+    at the higher ends
+-   leading to the average response now being 3 or 4
+
+Now lets add a linear model in here!
+
+-   first lets look at the data
+
+```{r}
+d
+```
+
+-   case here is just each individual
+-   the response is how morally permissable they felt the action was (1 least, 7
+    most)
+-   action, intention, contact describe what happens in the story
+    -   action is whether the harm is caused by something someone did
+    -   intention is whether someone knew the harm their action would cause
+    -   contact is whether someone actually "pushed" a person instead of just
+        doing something that indirectly causes harm
+        -   theoretically contact always involved action, but that is not the
+            way this is coded
+
+Linear Model
+
+-   below is a way to model interaction
+-   so essentially, BetaI contains all possible interactions withinit
+-   so if A and C are 0, then betaA, betaIA, betaC,betaIC all become 0 leaving
+    only betaI
+-   if I is 0 then it cancels out that whole second line
+-   however, if either one of A, C or both are not 0 and I is not 0 then I
+    multiplies that whole term set automatically creating interactions
+
+```{r}
+d_in = list(R = d$response, A = d$action, I = d$intention, C = d$contact)
+m4 = ulam(alist(
+    R ~ dordlogit(phi, alphas),
+    phi <- betaA*A + betaC*C + BetaI*I, # doing something weird to create interaction
+    BetaI <- betaI + betaIA*A + betaIC*C,
+    c(betaA,betaC,betaI,betaIA,betaIC) ~ dnorm(0,0.5),
+    alphas ~ dnorm(0,1.5)), 
+    data = d_in, chains = 4, cores = 4)
+```
+
+```{r}
+precis(m4)
+plot(precis(m4))
+```
+
+-   so, the presence of all the story features make the moral rating worse
+-   interestingly, the interaction of intention (knowing the harm of the action)
+    and contact (physically touching the harmed person) decreases the morality
+    far more than anything else
+-   he generates a bunch of posterior graphs but I am not super interested in
+    that for this context
+-   but basically he shows how the posterior reflects the bad interaction
+    between intention and contact and decreases the morality rating of the
+    action
+
+# Ordinal Categorical Predictors
+
+-   so we conquered ordinal outcomes, what about ordinal predictors?
+-   he introduces the dirichlet distribution here
+
+```{r}
+library(gtools)
+delta2 = rdirichlet(10, alpha = rep(2,7))
+str(delta2)
+```
+
+-   so output is 10 samples (10 rows) of a vector of 7 values
+-   each value is probability for the particular vector, based on a seed of 2
+
+```{r}
+h = 4
+plot( NULL , xlim=c(1,7) , ylim=c(0,0.4) , xlab="index" , ylab="probability" )
+for (i in 1:nrow(delta2)) lines(1:7, delta[i,], type="b",
+pch=ifelse(i==h,16,1), lwd=ifelse(i==h,4,1.5),
+col=ifelse(i==h,"blue",col.alpha("blue",0.7)))
+```
+
+-   the probabilities within each vector can vary pretty wildly
+-   this is good, it allows the "distance" between each lil delta to vary wildly
+-   lets look at other vectors of dirichlet distribution
+
+```{r}
+delta = rdirichlet(10, alpha = rep(0.1,7))
+str(delta)
+h = 4
+plot( NULL , xlim=c(1,7) , ylim=c(0,1) , xlab="index" , ylab="probability" )
+for (i in 1:nrow(delta)) lines(1:7, delta[i,], type="b",
+pch=ifelse(i==h,16,1), lwd=ifelse(i==h,4,1.5),
+col=ifelse(i==h,"blue",col.alpha("blue",0.7)))
+```
+
+-   so when alpha is \<1, the distribution creates more "edge cases" or sticks
+    probability density in more specific spots, while giving none to others
+    -   in this case, that is like saying some categories don't matter at all
+        while others matter a lot
+-   when alpha \> 1, the probability density is more even
+-   this is expected because mean = component/sum of all components
+-   variance = complicated formula, but as the vector grows longer, increase in
+    number of components, variance shrinks
+-   Marginals =
+
+```{r}
+n = 10
+delta = rdirichlet(10, alpha = rep(0.5,n))
+#str(delta)
+for(i in 1:nrow(delta)){
+  print(mean(delta[,i]))
+}
+h = 4
+plot( NULL , xlim=c(1,n) , ylim=c(0,1) , xlab="index" , ylab="probability" )
+for (i in 1:nrow(delta)) lines(1:n, delta[i,], type="b",
+pch=ifelse(i==h,16,1), lwd=ifelse(i==h,4,1.5),
+col=ifelse(i==h,"blue",col.alpha("blue",0.7)))
+```
+
+Going to include education in model but need to fix
+
+```{r}
+for(i in levels(d$edu)){print(i)}
+level_vec = c(6,1,8,4,7,2,5,3)
+d$edu2 = level_vec[d$edu] # integer value for each level
+for(i in 1:length(levels(d$edu))){print(paste0(levels(d$edu)[i], ": ", level_vec[i]))}
+```
+
+```{r}
+d_in = list(R = d$response, 
+            A = d$action, 
+            I = d$intention, 
+            C = d$contact,
+            E = d$edu2,
+            delta_prior = rep(2,7)) # the alpha prior vector for dirichlet distribution
+m4 = ulam(alist(
+    R ~ dordlogit(phi, alphas),
+    phi <- betaA*A + betaC*C + BetaI*I + 
+      betaE*sum(delta_j[1:E]), # this is the new ordinal beta, betaE X sum of ordinal categorical like notes
+    BetaI <- betaI + betaIA*A + betaIC*C,
+    c(betaA,betaC,betaI,betaIA,betaIC, betaE) ~ dnorm(0,0.5),
+    alphas ~ dnorm(0,1.5),
+    vector[8]: delta_j <<- append_row(0,delta), # adding that 0 for the first education level, since the last level is "removed"
+    simplex[7]: delta ~ ddirichlet(delta_prior)
+    ), 
+    data = d_in, chains = 4, cores = 4)
+```
+
+-   took about 7 minutes to sample
+
+```{r}
+precis(m4, depth = 2)
+```
+
+-   so the difference between some college and bachelors degree is very small if
+    I am interpreting these delta parameters correctly
